@@ -1,6 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
-use std::{cell::RefCell, collections::BTreeMap, fs, path::PathBuf, rc::Rc, time::Instant};
+use std::{
+    cell::RefCell,
+    collections::BTreeMap,
+    fs,
+    path::PathBuf,
+    rc::Rc,
+    time::{Instant, SystemTime},
+};
 
 use eframe::{
     egui::{self, CentralPanel, Grid, ScrollArea, TextStyle, Visuals},
@@ -8,6 +15,7 @@ use eframe::{
     App, Frame,
 };
 use egui_file::FileDialog;
+use indexmap::IndexMap;
 use livesplit_auto_splitting::{time, Runtime, SettingValue, SettingsStore, Timer, TimerState};
 
 fn main() {
@@ -50,6 +58,7 @@ fn main() {
 
             let mut app = Box::new(MyApp {
                 path: None,
+                module_modified_time: None,
                 open_file_dialog: None,
                 module: Vec::new(),
                 runtime: None,
@@ -59,7 +68,7 @@ fn main() {
             });
 
             if let Some(path) = std::env::args().nth(1).map(From::from) {
-                app.set_path(path);
+                app.set_path(path, false);
             }
 
             app
@@ -69,6 +78,7 @@ fn main() {
 
 struct MyApp {
     path: Option<PathBuf>,
+    module_modified_time: Option<SystemTime>,
     open_file_dialog: Option<FileDialog>,
     module: Vec<u8>,
     runtime: Option<Runtime<DebuggerTimer>>,
@@ -83,6 +93,12 @@ impl App for MyApp {
 
         let mut tick_rate = String::new();
         let mut new_runtime = None;
+
+        if let Some(path) = &self.path {
+            if fs::metadata(path).ok().and_then(|m| m.modified().ok()) > self.module_modified_time {
+                self.set_path(path.clone(), false);
+            }
+        }
 
         if let Some(runtime) = &mut self.runtime {
             let now = Instant::now();
@@ -187,7 +203,7 @@ impl App for MyApp {
             if let Some(dialog) = &mut self.open_file_dialog {
                 if dialog.show(ctx).selected() {
                     if let Some(file) = dialog.path() {
-                        self.set_path(file);
+                        self.set_path(file, true);
                     }
                 }
             }
@@ -208,7 +224,7 @@ impl App for MyApp {
                             if self.runtime.is_some() {
                                 if let Some(path) = &self.path {
                                     if ui.button("Reload").clicked() {
-                                        self.set_path(path.clone());
+                                        self.set_path(path.clone(), false);
                                     }
                                 }
                             }
@@ -269,13 +285,27 @@ impl App for MyApp {
 }
 
 impl MyApp {
-    fn set_path(&mut self, file: PathBuf) {
+    fn set_path(&mut self, file: PathBuf, clear: bool) {
+        let is_reload = Some(file.as_path()) == self.path.as_deref();
         self.module = fs::read(&file).unwrap_or_default();
+        self.module_modified_time = fs::metadata(&file).ok().and_then(|m| m.modified().ok());
         self.path = Some(file);
         self.runtime = Runtime::new(&self.module, self.timer.clone(), SettingsStore::new()).ok();
         self.slowest_tick = std::time::Duration::ZERO;
         self.avg_tick_secs = 0.0;
-        self.timer.reset();
+        let mut timer = self.timer.0.borrow_mut();
+        if clear {
+            timer.clear();
+        }
+        timer.variables.clear();
+        timer.logs.push(
+            if is_reload {
+                "Auto Splitter reloaded."
+            } else {
+                "Auto Splitter loaded."
+            }
+            .into(),
+        );
     }
 }
 
@@ -305,7 +335,7 @@ struct DebuggerTimerState {
     timer_state: TimerState,
     game_time: time::Duration,
     split_index: usize,
-    variables: BTreeMap<Box<str>, Box<str>>,
+    variables: IndexMap<Box<str>, String>,
     logs: Vec<Box<str>>,
 }
 
@@ -341,10 +371,10 @@ impl Timer for DebuggerTimer {
     fn resume_game_time(&mut self) {}
 
     fn set_variable(&mut self, key: &str, value: &str) {
-        self.0
-            .borrow_mut()
-            .variables
-            .insert(key.into(), value.into());
+        let mut guard = self.0.borrow_mut();
+        let s = guard.variables.entry(key.into()).or_default();
+        s.clear();
+        s.push_str(value);
     }
 
     fn log(&mut self, message: std::fmt::Arguments<'_>) {
@@ -366,5 +396,10 @@ impl DebuggerTimerState {
         self.timer_state = TimerState::NotRunning;
         self.split_index = 0;
         self.game_time = time::Duration::ZERO;
+        self.variables.clear();
+    }
+
+    fn clear(&mut self) {
+        *self = Default::default();
     }
 }

@@ -109,6 +109,7 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "egui_file",
+ "indexmap",
  "livesplit-auto-splitting",
 ]
 
@@ -1348,7 +1349,7 @@ checksum = "d4d2456c373231a208ad294c33dc5bff30051eafd954cd4caae83a712b12854d"
 [[package]]
 name = "livesplit-auto-splitting"
 version = "0.1.0"
-source = "git+https://github.com/LiveSplit/livesplit-core#5672b2b2625db8bb1e405df3f8306dbc1c156991"
+source = "git+https://github.com/LiveSplit/livesplit-core#092e336e24abd26e97e5a2e55abb0bbd97ff0b44"
 dependencies = [
  "anyhow",
  "proc-maps",
