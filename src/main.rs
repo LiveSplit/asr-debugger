@@ -183,12 +183,17 @@ impl App for MyApp {
                                                 setting.key.clone(),
                                                 SettingValue::Bool(value),
                                             );
-                                            new_runtime = Runtime::new(
+                                            new_runtime = match Runtime::new(
                                                 &self.module,
                                                 self.timer.clone(),
                                                 settings,
-                                            )
-                                            .ok();
+                                            ) {
+                                                Ok(r) => Some(r),
+                                                Err(e) => {
+                                                    println!("Failed loading the WASM file: {e:?}");
+                                                    None
+                                                }
+                                            };
                                             break;
                                         }
                                     }
@@ -290,7 +295,13 @@ impl MyApp {
         self.module = fs::read(&file).unwrap_or_default();
         self.module_modified_time = fs::metadata(&file).ok().and_then(|m| m.modified().ok());
         self.path = Some(file);
-        self.runtime = Runtime::new(&self.module, self.timer.clone(), SettingsStore::new()).ok();
+        self.runtime = match Runtime::new(&self.module, self.timer.clone(), SettingsStore::new()) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                println!("Failed loading the WASM file: {e:?}");
+                None
+            }
+        };
         self.slowest_tick = std::time::Duration::ZERO;
         self.avg_tick_secs = 0.0;
         let mut timer = self.timer.0.borrow_mut();
