@@ -10,13 +10,21 @@ use std::{
 };
 
 use eframe::{
-    egui::{self, CentralPanel, Grid, ScrollArea, TextStyle, Visuals},
+    egui::{self, Align, Grid, Layout, TextStyle, Visuals},
     epaint::{FontFamily, FontId},
     App, Frame,
 };
+use egui_dock::{DockArea, NodeIndex, Style, Tree};
 use egui_file::FileDialog;
 use indexmap::IndexMap;
 use livesplit_auto_splitting::{time, Runtime, SettingValue, SettingsStore, Timer, TimerState};
+
+enum Tab {
+    Main,
+    Logs,
+    Variables,
+    Settings,
+}
 
 fn main() {
     let options = eframe::NativeOptions::default();
@@ -56,27 +64,41 @@ fn main() {
 
             let timer = DebuggerTimer::default();
 
+            let mut tree = Tree::new(vec![Tab::Main]);
+            let [left, right] = tree.split_right(NodeIndex::root(), 0.65, vec![Tab::Variables]);
+            tree.split_below(right, 0.5, vec![Tab::Settings]);
+            tree.split_below(left, 0.4, vec![Tab::Logs]);
+
             let mut app = Box::new(MyApp {
-                path: None,
-                module_modified_time: None,
-                open_file_dialog: None,
-                module: Vec::new(),
-                runtime: None,
-                timer,
-                slowest_tick: std::time::Duration::ZERO,
-                avg_tick_secs: 0.0,
+                tree,
+                state: AppState {
+                    module_modified_time: None,
+                    module: Vec::new(),
+                    path: None,
+                    open_file_dialog: None,
+                    runtime: None,
+                    slowest_tick: std::time::Duration::ZERO,
+                    avg_tick_secs: 0.0,
+                    timer,
+                },
             });
 
             if let Some(path) = std::env::args().nth(1).map(From::from) {
-                app.set_path(path, false);
+                app.state.set_path(path, false);
             }
 
             app
         }),
-    );
+    )
+    .unwrap();
 }
 
 struct MyApp {
+    tree: Tree<Tab>,
+    state: AppState,
+}
+
+struct AppState {
     path: Option<PathBuf>,
     module_modified_time: Option<SystemTime>,
     open_file_dialog: Option<FileDialog>,
@@ -87,133 +109,22 @@ struct MyApp {
     avg_tick_secs: f64,
 }
 
-impl App for MyApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
-        ctx.request_repaint();
+struct TabViewer<'a> {
+    state: &'a mut AppState,
+    tick_rate: String,
+    new_runtime: Option<Runtime<DebuggerTimer>>,
+}
 
-        let mut tick_rate = String::new();
-        let mut new_runtime = None;
+impl egui_dock::TabViewer for TabViewer<'_> {
+    type Tab = Tab;
 
-        if let Some(path) = &self.path {
-            if fs::metadata(path).ok().and_then(|m| m.modified().ok()) > self.module_modified_time {
-                self.set_path(path.clone(), false);
-            }
-        }
+    fn on_close(&mut self, _tab: &mut Self::Tab) -> bool {
+        false
+    }
 
-        if let Some(runtime) = &mut self.runtime {
-            let now = Instant::now();
-            let res = runtime.update();
-            let time_of_tick = now.elapsed();
-            if time_of_tick > self.slowest_tick {
-                self.slowest_tick = time_of_tick;
-            }
-            self.avg_tick_secs = 0.999 * self.avg_tick_secs + 0.001 * time_of_tick.as_secs_f64();
-            tick_rate = match res {
-                Ok(tick_rate) => {
-                    fmt_duration(time::Duration::try_from(tick_rate).unwrap_or_default())
-                }
-                Err(e) => format!("Error: {e}"),
-            };
-
-            egui::TopBottomPanel::bottom("logs")
-                .resizable(true)
-                .show(ctx, |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.heading("Logs");
-                    });
-                    egui::ScrollArea::both().show(ui, |ui| {
-                        Grid::new("log_grid")
-                            .num_columns(1)
-                            .spacing([40.0, 4.0])
-                            .striped(true)
-                            .show(ui, |ui| {
-                                for log in &self.timer.0.borrow().logs {
-                                    ui.label(&**log);
-                                    ui.end_row();
-                                }
-                            });
-                    });
-                });
-
-            egui::SidePanel::left("variables")
-                .resizable(true)
-                .show(ctx, |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.heading("Variables");
-                    });
-                    egui::ScrollArea::both().show(ui, |ui| {
-                        Grid::new("vars_grid")
-                            .num_columns(2)
-                            .spacing([40.0, 4.0])
-                            .striped(true)
-                            .show(ui, |ui| {
-                                let state = self.timer.0.borrow();
-                                for (key, value) in &state.variables {
-                                    ui.label(&**key);
-                                    ui.label(&**value);
-                                    ui.end_row();
-                                }
-                            });
-                    });
-                });
-
-            egui::SidePanel::right("settings")
-                .resizable(true)
-                .show(ctx, |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.heading("Settings");
-                    });
-                    egui::ScrollArea::both().show(ui, |ui| {
-                        Grid::new("settings_grid")
-                            .num_columns(2)
-                            .spacing([40.0, 4.0])
-                            .striped(true)
-                            .show(ui, |ui| {
-                                for setting in runtime.user_settings() {
-                                    ui.label(&*setting.description).on_hover_text(&*setting.key);
-                                    if let SettingValue::Bool(v) = setting.default_value {
-                                        let mut value =
-                                            match runtime.settings_store().get(&setting.key) {
-                                                Some(SettingValue::Bool(v)) => *v,
-                                                _ => v,
-                                            };
-                                        if ui.checkbox(&mut value, "").changed() {
-                                            let mut settings = runtime.settings_store().clone();
-                                            settings.set(
-                                                setting.key.clone(),
-                                                SettingValue::Bool(value),
-                                            );
-                                            new_runtime = match Runtime::new(
-                                                &self.module,
-                                                self.timer.clone(),
-                                                settings,
-                                            ) {
-                                                Ok(r) => Some(r),
-                                                Err(e) => {
-                                                    println!("Failed loading the WASM file: {e:?}");
-                                                    None
-                                                }
-                                            };
-                                            break;
-                                        }
-                                    }
-                                    ui.end_row();
-                                }
-                            });
-                    });
-                });
-        }
-
-        CentralPanel::default().show(ctx, |ui| {
-            if let Some(dialog) = &mut self.open_file_dialog {
-                if dialog.show(ctx).selected() {
-                    if let Some(file) = dialog.path() {
-                        self.set_path(file, true);
-                    }
-                }
-            }
-
-            ScrollArea::both().show(ui, |ui| {
+    fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
+        match tab {
+            Tab::Main => {
                 Grid::new("main_grid")
                     .num_columns(2)
                     .spacing([40.0, 4.0])
@@ -222,14 +133,14 @@ impl App for MyApp {
                         ui.label("File");
                         ui.horizontal(|ui| {
                             if ui.button("Open").clicked() {
-                                let mut dialog = FileDialog::open_file(self.path.clone());
+                                let mut dialog = FileDialog::open_file(self.state.path.clone());
                                 dialog.open();
-                                self.open_file_dialog = Some(dialog);
+                                self.state.open_file_dialog = Some(dialog);
                             }
-                            if self.runtime.is_some() {
-                                if let Some(path) = &self.path {
+                            if self.state.runtime.is_some() {
+                                if let Some(path) = &self.state.path {
                                     if ui.button("Reload").clicked() {
-                                        self.set_path(path.clone(), false);
+                                        self.state.set_path(path.clone(), false);
                                     }
                                 }
                             }
@@ -237,27 +148,28 @@ impl App for MyApp {
                         ui.end_row();
 
                         ui.label("Tick Rate");
-                        ui.label(tick_rate);
+                        ui.label(&self.tick_rate);
                         ui.end_row();
 
                         ui.label("Avg. Tick Time");
                         ui.label(fmt_duration(time::Duration::seconds_f64(
-                            self.avg_tick_secs,
+                            self.state.avg_tick_secs,
                         )));
                         ui.end_row();
 
                         ui.label("Slowest Tick");
                         ui.horizontal(|ui| {
                             ui.label(fmt_duration(
-                                time::Duration::try_from(self.slowest_tick).unwrap_or_default(),
+                                time::Duration::try_from(self.state.slowest_tick)
+                                    .unwrap_or_default(),
                             ));
                             if ui.button("Reset").clicked() {
-                                self.slowest_tick = std::time::Duration::ZERO;
+                                self.state.slowest_tick = std::time::Duration::ZERO;
                             }
                         });
                         ui.end_row();
 
-                        let mut state = self.timer.0.borrow_mut();
+                        let mut state = self.state.timer.0.borrow_mut();
 
                         ui.label("Timer State");
                         ui.horizontal(|ui| {
@@ -280,16 +192,146 @@ impl App for MyApp {
                         ui.label(format!("{}", state.split_index));
                         ui.end_row();
                     });
-            });
-        });
+            }
+            Tab::Logs => {
+                Grid::new("log_grid")
+                    .num_columns(1)
+                    .spacing([40.0, 4.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        for log in &self.state.timer.0.borrow().logs {
+                            ui.label(&**log);
+                            ui.end_row();
+                        }
+                    });
+                ui.with_layout(Layout::right_to_left(Align::BOTTOM), |ui| {
+                    if ui.button("Clear").clicked() {
+                        self.state.timer.0.borrow_mut().logs.clear();
+                    }
+                });
+            }
+            Tab::Variables => {
+                Grid::new("vars_grid")
+                    .num_columns(2)
+                    .spacing([40.0, 4.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        let state = self.state.timer.0.borrow();
+                        for (key, value) in &state.variables {
+                            ui.label(&**key);
+                            ui.label(&**value);
+                            ui.end_row();
+                        }
+                    });
+            }
+            Tab::Settings => {
+                Grid::new("settings_grid")
+                    .num_columns(2)
+                    .spacing([40.0, 4.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        if let Some(runtime) = &self.state.runtime {
+                            for setting in runtime.user_settings() {
+                                ui.label(&*setting.description).on_hover_text(&*setting.key);
+                                if let SettingValue::Bool(v) = setting.default_value {
+                                    let mut value = match runtime.settings_store().get(&setting.key)
+                                    {
+                                        Some(SettingValue::Bool(v)) => *v,
+                                        _ => v,
+                                    };
+                                    if ui.checkbox(&mut value, "").changed() {
+                                        let mut settings = runtime.settings_store().clone();
+                                        settings
+                                            .set(setting.key.clone(), SettingValue::Bool(value));
+                                        self.new_runtime = match Runtime::new(
+                                            &self.state.module,
+                                            self.state.timer.clone(),
+                                            settings,
+                                        ) {
+                                            Ok(r) => Some(r),
+                                            Err(e) => {
+                                                println!("Failed loading the WASM file: {e:?}");
+                                                None
+                                            }
+                                        };
+                                        break;
+                                    }
+                                }
+                                ui.end_row();
+                            }
+                        }
+                    });
+            }
+        }
+    }
 
-        if new_runtime.is_some() {
-            self.runtime = new_runtime;
+    fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
+        match tab {
+            Tab::Main => "Main",
+            Tab::Logs => "Logs",
+            Tab::Variables => "Variables",
+            Tab::Settings => "Settings",
+        }
+        .into()
+    }
+}
+
+impl App for MyApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
+        ctx.request_repaint();
+
+        let mut tick_rate = String::new();
+
+        if let Some(path) = &self.state.path {
+            if fs::metadata(path).ok().and_then(|m| m.modified().ok())
+                > self.state.module_modified_time
+            {
+                self.state.set_path(path.clone(), false);
+            }
+        }
+
+        if let Some(runtime) = &mut self.state.runtime {
+            let now = Instant::now();
+            let res = runtime.update();
+            let time_of_tick = now.elapsed();
+            if time_of_tick > self.state.slowest_tick {
+                self.state.slowest_tick = time_of_tick;
+            }
+            self.state.avg_tick_secs =
+                0.999 * self.state.avg_tick_secs + 0.001 * time_of_tick.as_secs_f64();
+            tick_rate = match res {
+                Ok(tick_rate) => {
+                    fmt_duration(time::Duration::try_from(tick_rate).unwrap_or_default())
+                }
+                Err(e) => format!("Error: {e}"),
+            };
+        }
+
+        if let Some(dialog) = &mut self.state.open_file_dialog {
+            if dialog.show(ctx).selected() {
+                if let Some(file) = dialog.path() {
+                    self.state.set_path(file, true);
+                }
+            }
+        }
+
+        let mut tab_viewer = TabViewer {
+            state: &mut self.state,
+            tick_rate,
+            new_runtime: None,
+        };
+
+        DockArea::new(&mut self.tree)
+            .style(Style::from_egui(ctx.style().as_ref()))
+            .show(ctx, &mut tab_viewer);
+
+        if tab_viewer.new_runtime.is_some() {
+            self.state.runtime = tab_viewer.new_runtime;
         }
     }
 }
 
-impl MyApp {
+impl AppState {
     fn set_path(&mut self, file: PathBuf, clear: bool) {
         let is_reload = Some(file.as_path()) == self.path.as_deref();
         self.module = fs::read(&file).unwrap_or_default();

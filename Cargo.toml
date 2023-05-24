@@ -8,5 +8,6 @@ edition = "2021"
 [dependencies]
 eframe = "0.21.3"
 egui_file = "0.8.0"
+egui_dock = "0.5.1"
 livesplit-auto-splitting = { git = "https://github.com/LiveSplit/livesplit-core", features = ["unstable"] }
 indexmap = "1.9.2"
