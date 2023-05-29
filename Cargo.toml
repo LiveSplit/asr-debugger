@@ -6,8 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-eframe = "0.21.3"
-egui_file = "0.8.0"
-egui_dock = "0.5.1"
-livesplit-auto-splitting = { git = "https://github.com/LiveSplit/livesplit-core", features = ["unstable"] }
+eframe = "0.22.0"
+egui_file = "0.9.0"
+egui_dock = "0.6.0"
+livesplit-auto-splitting = { git = "https://github.com/LiveSplit/livesplit-core" }
 indexmap = "1.9.2"
