@@ -10,7 +10,7 @@ use std::{
 };
 
 use eframe::{
-    egui::{self, Grid, TextStyle, Visuals},
+    egui::{self, Grid, RichText, TextStyle, Visuals},
     epaint::{FontFamily, FontId},
     App, Frame,
 };
@@ -24,6 +24,7 @@ enum Tab {
     Logs,
     Variables,
     Settings,
+    Processes,
 }
 
 fn main() {
@@ -67,7 +68,7 @@ fn main() {
             let mut tree = Tree::new(vec![Tab::Main]);
             let [left, right] = tree.split_right(NodeIndex::root(), 0.65, vec![Tab::Variables]);
             tree.split_below(right, 0.5, vec![Tab::Settings]);
-            tree.split_below(left, 0.5, vec![Tab::Logs]);
+            tree.split_below(left, 0.5, vec![Tab::Logs, Tab::Processes]);
 
             let mut app = Box::new(Debugger {
                 tree,
@@ -195,6 +196,29 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                         ui.label("Split Index");
                         ui.label(state.split_index.to_string());
                         ui.end_row();
+
+                        if let Some(runtime) = &mut self.state.runtime {
+                            let memory = runtime.memory();
+                            ui.label("Memory");
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    byte_unit::Byte::from_bytes(memory.len() as _)
+                                        .get_appropriate_unit(true)
+                                        .to_string(),
+                                );
+                                if ui.button("Dump").clicked() {
+                                    if let Err(e) = fs::write("memory_dump.bin", memory) {
+                                        self.state
+                                            .timer
+                                            .0
+                                            .borrow_mut()
+                                            .logs
+                                            .push(format!("Failed to dump memory: {}", e).into());
+                                    }
+                                }
+                            });
+                            ui.end_row();
+                        }
                     });
             }
             Tab::Logs => {
@@ -264,6 +288,24 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                         }
                     });
             }
+            Tab::Processes => {
+                Grid::new("processes_grid")
+                    .num_columns(2)
+                    .spacing([40.0, 4.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.label(RichText::new("PID").strong().underline());
+                        ui.label(RichText::new("Path").strong().underline());
+                        ui.end_row();
+                        if let Some(runtime) = &self.state.runtime {
+                            for process in runtime.attached_processes() {
+                                ui.label(process.pid().to_string());
+                                ui.label(process.path().unwrap_or("Unnamed Process"));
+                                ui.end_row();
+                            }
+                        }
+                    });
+            }
         }
     }
 
@@ -273,6 +315,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
             Tab::Logs => "Logs",
             Tab::Variables => "Variables",
             Tab::Settings => "Settings",
+            Tab::Processes => "Processes",
         }
         .into()
     }

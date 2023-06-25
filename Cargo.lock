@@ -192,6 +192,7 @@ checksum = "96d30a06541fbafbc7f82ed10c06164cfbd2c401138f6addd8404629c4b16711"
 name = "asr-debugger"
 version = "0.1.0"
 dependencies = [
+ "byte-unit",
  "eframe",
  "egui_dock",
  "egui_file",
@@ -454,6 +455,16 @@ name = "bumpalo"
 version = "3.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a3e2c3daef883ecc1b5d58c15adae93470a91d425f3532ba1695849656af3fc1"
+
+[[package]]
+name = "byte-unit"
+version = "4.0.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da78b32057b8fdfc352504708feeba7216dcd65a2c9ab02978cbd288d1279b6c"
+dependencies = [
+ "serde",
+ "utf8-width",
+]
 
 [[package]]
 name = "bytemuck"
@@ -1744,7 +1755,7 @@ checksum = "ef53942eb7bf7ff43a617b3e2c1c4a5ecf5944a7c1bc12d7ee39bbb15e5c1519"
 [[package]]
 name = "livesplit-auto-splitting"
 version = "0.1.0"
-source = "git+https://github.com/LiveSplit/livesplit-core#907a04d1e6af2b99c42f8888ec6a94e2c6b9854e"
+source = "git+https://github.com/LiveSplit/livesplit-core#caf1ea7ae8477d5fb2ccf14eb659d747573d9400"
 dependencies = [
  "anyhow",
  "proc-maps",
@@ -2976,6 +2987,12 @@ dependencies = [
  "idna",
  "percent-encoding",
 ]
+
+[[package]]
+name = "utf8-width"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5190c9442dcdaf0ddd50f37420417d219ae5261bbf5db120d0f9bab996c9cba1"
 
 [[package]]
 name = "vec_map"
