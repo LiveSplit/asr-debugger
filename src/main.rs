@@ -10,7 +10,7 @@ use std::{
 };
 
 use eframe::{
-    egui::{self, Align, Grid, Layout, TextStyle, Visuals},
+    egui::{self, Grid, TextStyle, Visuals},
     epaint::{FontFamily, FontId},
     App, Frame,
 };
@@ -67,9 +67,9 @@ fn main() {
             let mut tree = Tree::new(vec![Tab::Main]);
             let [left, right] = tree.split_right(NodeIndex::root(), 0.65, vec![Tab::Variables]);
             tree.split_below(right, 0.5, vec![Tab::Settings]);
-            tree.split_below(left, 0.4, vec![Tab::Logs]);
+            tree.split_below(left, 0.5, vec![Tab::Logs]);
 
-            let mut app = Box::new(MyApp {
+            let mut app = Box::new(Debugger {
                 tree,
                 state: AppState {
                     module_modified_time: None,
@@ -93,7 +93,7 @@ fn main() {
     .unwrap();
 }
 
-struct MyApp {
+struct Debugger {
     tree: Tree<Tab>,
     state: AppState,
 }
@@ -173,7 +173,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
 
                         ui.label("Timer State");
                         ui.horizontal(|ui| {
-                            ui.label(format!("{:?}", state.timer_state));
+                            ui.label(timer_state_to_str(state.timer_state));
                             if state.timer_state == TimerState::NotRunning {
                                 if ui.button("Start").clicked() {
                                     state.start();
@@ -188,8 +188,12 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                         ui.label(fmt_duration(state.game_time));
                         ui.end_row();
 
+                        ui.label("Game Time State");
+                        ui.label(state.game_time_state.to_str());
+                        ui.end_row();
+
                         ui.label("Split Index");
-                        ui.label(format!("{}", state.split_index));
+                        ui.label(state.split_index.to_string());
                         ui.end_row();
                     });
             }
@@ -204,11 +208,9 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                             ui.end_row();
                         }
                     });
-                ui.with_layout(Layout::right_to_left(Align::BOTTOM), |ui| {
-                    if ui.button("Clear").clicked() {
-                        self.state.timer.0.borrow_mut().logs.clear();
-                    }
-                });
+                if ui.button("Clear").clicked() {
+                    self.state.timer.0.borrow_mut().logs.clear();
+                }
             }
             Tab::Variables => {
                 Grid::new("vars_grid")
@@ -276,7 +278,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
     }
 }
 
-impl App for MyApp {
+impl App for Debugger {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
         ctx.request_repaint();
 
@@ -383,13 +385,41 @@ fn fmt_duration(time: time::Duration) -> String {
     }
 }
 
+fn timer_state_to_str(state: TimerState) -> &'static str {
+    match state {
+        TimerState::NotRunning => "Not running",
+        TimerState::Running => "Running",
+        TimerState::Paused => "Paused",
+        TimerState::Ended => "Ended",
+    }
+}
+
 #[derive(Default)]
 struct DebuggerTimerState {
     timer_state: TimerState,
     game_time: time::Duration,
+    game_time_state: GameTimeState,
     split_index: usize,
     variables: IndexMap<Box<str>, String>,
     logs: Vec<Box<str>>,
+}
+
+#[derive(Copy, Clone, Default, PartialEq)]
+enum GameTimeState {
+    #[default]
+    NotInitialized,
+    Paused,
+    Running,
+}
+
+impl GameTimeState {
+    fn to_str(self) -> &'static str {
+        match self {
+            GameTimeState::NotInitialized => "Not initialized",
+            GameTimeState::Paused => "Paused",
+            GameTimeState::Running => "Running",
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -431,12 +461,20 @@ impl Timer for DebuggerTimer {
     }
 
     fn set_game_time(&mut self, time: time::Duration) {
-        self.0.borrow_mut().game_time = time;
+        let mut state = self.0.borrow_mut();
+        state.game_time = time;
+        if state.game_time_state == GameTimeState::NotInitialized {
+            state.game_time_state = GameTimeState::Running;
+        }
     }
 
-    fn pause_game_time(&mut self) {}
+    fn pause_game_time(&mut self) {
+        self.0.borrow_mut().game_time_state = GameTimeState::Paused;
+    }
 
-    fn resume_game_time(&mut self) {}
+    fn resume_game_time(&mut self) {
+        self.0.borrow_mut().game_time_state = GameTimeState::Running;
+    }
 
     fn set_variable(&mut self, key: &str, value: &str) {
         let mut guard = self.0.borrow_mut();
@@ -464,6 +502,7 @@ impl DebuggerTimerState {
         self.timer_state = TimerState::NotRunning;
         self.split_index = 0;
         self.game_time = time::Duration::ZERO;
+        self.game_time_state = GameTimeState::NotInitialized;
         self.variables.clear();
     }
 
