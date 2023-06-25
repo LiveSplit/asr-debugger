@@ -411,6 +411,21 @@ impl Timer for DebuggerTimer {
         }
     }
 
+    fn skip_split(&mut self) {
+        // For now we just split, considering we have no real list.
+        self.split();
+    }
+
+    fn undo_split(&mut self) {
+        let mut state = self.0.borrow_mut();
+        if state.timer_state == TimerState::Ended {
+            state.timer_state = TimerState::Running;
+        }
+        if state.timer_state == TimerState::Running {
+            state.split_index = state.split_index.saturating_sub(1);
+        }
+    }
+
     fn reset(&mut self) {
         self.0.borrow_mut().reset();
     }
