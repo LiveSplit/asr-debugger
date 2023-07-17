@@ -17,7 +17,9 @@ use eframe::{
 use egui_dock::{DockArea, NodeIndex, Style, Tree};
 use egui_file::FileDialog;
 use indexmap::IndexMap;
-use livesplit_auto_splitting::{time, Runtime, SettingValue, SettingsStore, Timer, TimerState};
+use livesplit_auto_splitting::{
+    time, Runtime, SettingValue, SettingsStore, Timer, TimerState, UserSettingKind,
+};
 
 enum Tab {
     Main,
@@ -28,6 +30,8 @@ enum Tab {
 }
 
 fn main() {
+    std::env::set_var("WASMTIME_BACKTRACE_DETAILS", "1");
+
     let options = eframe::NativeOptions::default();
     eframe::run_native(
         "Auto Splitting Runtime Debugger",
@@ -252,35 +256,62 @@ impl egui_dock::TabViewer for TabViewer<'_> {
             }
             Tab::Settings => {
                 Grid::new("settings_grid")
-                    .num_columns(2)
+                    .num_columns(3)
                     .spacing([40.0, 4.0])
                     .striped(true)
                     .show(ui, |ui| {
+                        ui.label(RichText::new("Key").strong().underline());
+                        ui.label(RichText::new("Setting").strong().underline());
+                        ui.end_row();
                         if let Some(runtime) = &self.state.runtime {
                             for setting in runtime.user_settings() {
-                                ui.label(&*setting.description).on_hover_text(&*setting.key);
-                                if let SettingValue::Bool(v) = setting.default_value {
-                                    let mut value = match runtime.settings_store().get(&setting.key)
-                                    {
-                                        Some(SettingValue::Bool(v)) => *v,
-                                        _ => v,
-                                    };
-                                    if ui.checkbox(&mut value, "").changed() {
-                                        let mut settings = runtime.settings_store().clone();
-                                        settings
-                                            .set(setting.key.clone(), SettingValue::Bool(value));
-                                        self.new_runtime = match Runtime::new(
-                                            &self.state.module,
-                                            self.state.timer.clone(),
-                                            settings,
-                                        ) {
-                                            Ok(r) => Some(r),
-                                            Err(e) => {
-                                                println!("Failed loading the WASM file: {e:?}");
-                                                None
-                                            }
-                                        };
-                                        break;
+                                ui.label(&*setting.key);
+                                match setting.kind {
+                                    UserSettingKind::Bool { default_value } => {
+                                        let label = ui.label(&*setting.description);
+                                        if let Some(tooltip) = &setting.tooltip {
+                                            label.on_hover_text(&**tooltip);
+                                        }
+                                        let mut value =
+                                            match runtime.settings_store().get(&setting.key) {
+                                                Some(SettingValue::Bool(v)) => *v,
+                                                _ => default_value,
+                                            };
+                                        if ui.checkbox(&mut value, "").changed() {
+                                            let mut settings = runtime.settings_store().clone();
+                                            settings.set(
+                                                setting.key.clone(),
+                                                SettingValue::Bool(value),
+                                            );
+                                            self.new_runtime = match Runtime::new(
+                                                &self.state.module,
+                                                self.state.timer.clone(),
+                                                settings,
+                                            ) {
+                                                Ok(r) => Some(r),
+                                                Err(e) => {
+                                                    self.state.timer.0.borrow_mut().logs.push(
+                                                        format!(
+                                                            "Failed loading the WASM file: {e:?}"
+                                                        )
+                                                        .into(),
+                                                    );
+                                                    None
+                                                }
+                                            };
+                                            break;
+                                        }
+                                    }
+                                    UserSettingKind::Title { heading_level } => {
+                                        let label = ui.label(
+                                            RichText::new(&*setting.description)
+                                                .heading()
+                                                .underline()
+                                                .size(25.0 * 0.9f32.powi(heading_level as i32)),
+                                        );
+                                        if let Some(tooltip) = &setting.tooltip {
+                                            label.on_hover_text(&**tooltip);
+                                        }
                                     }
                                 }
                                 ui.end_row();
@@ -474,19 +505,27 @@ impl Timer for DebuggerTimer {
     }
 
     fn start(&mut self) {
-        self.0.borrow_mut().start();
+        let mut state = self.0.borrow_mut();
+        if state.timer_state == TimerState::NotRunning {
+            state.start();
+            state.logs.push("Timer started.".into());
+        }
     }
 
     fn split(&mut self) {
         let mut state = self.0.borrow_mut();
         if state.timer_state == TimerState::Running {
             state.split_index += 1;
+            state.logs.push("Splitted.".into());
         }
     }
 
     fn skip_split(&mut self) {
-        // For now we just split, considering we have no real list.
-        self.split();
+        let mut state = self.0.borrow_mut();
+        if state.timer_state == TimerState::Running {
+            state.split_index += 1;
+            state.logs.push("Split skipped.".into());
+        }
     }
 
     fn undo_split(&mut self) {
@@ -496,11 +535,14 @@ impl Timer for DebuggerTimer {
         }
         if state.timer_state == TimerState::Running {
             state.split_index = state.split_index.saturating_sub(1);
+            state.logs.push("Split undone.".into());
         }
     }
 
     fn reset(&mut self) {
-        self.0.borrow_mut().reset();
+        let mut state = self.0.borrow_mut();
+        state.reset();
+        state.logs.push("Run reset.".into());
     }
 
     fn set_game_time(&mut self, time: time::Duration) {
