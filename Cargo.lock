@@ -1785,7 +1785,7 @@ checksum = "09fc20d2ca12cb9f044c93e3bd6d32d523e6e2ec3db4f7b2939cd99026ecd3f0"
 [[package]]
 name = "livesplit-auto-splitting"
 version = "0.1.0"
-source = "git+https://github.com/LiveSplit/livesplit-core#c7511e5737f9987731fad5761dd8584aaea928f5"
+source = "git+https://github.com/LiveSplit/livesplit-core#5e17879e2c7d2325896bf9e58279f51a2ef460cb"
 dependencies = [
  "anyhow",
  "proc-maps",

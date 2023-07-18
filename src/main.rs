@@ -375,11 +375,15 @@ impl App for Debugger {
             }
             self.state.avg_tick_secs =
                 0.999 * self.state.avg_tick_secs + 0.001 * time_of_tick.as_secs_f64();
-            tick_rate = match res {
-                Ok(tick_rate) => {
-                    fmt_duration(time::Duration::try_from(tick_rate).unwrap_or_default())
-                }
-                Err(e) => format!("Error: {e}"),
+            tick_rate =
+                fmt_duration(time::Duration::try_from(runtime.tick_rate()).unwrap_or_default());
+            if let Err(e) = res {
+                self.state
+                    .timer
+                    .0
+                    .borrow_mut()
+                    .logs
+                    .push(format!("Error: {e}").into())
             };
         }
 
@@ -416,7 +420,11 @@ impl AppState {
         self.runtime = match Runtime::new(&self.module, self.timer.clone(), SettingsStore::new()) {
             Ok(r) => Some(r),
             Err(e) => {
-                println!("Failed loading the WASM file: {e:?}");
+                self.timer
+                    .0
+                    .borrow_mut()
+                    .logs
+                    .push(format!("Failed loading the WASM file: {e:?}").into());
                 None
             }
         };
