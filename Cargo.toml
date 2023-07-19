@@ -12,3 +12,4 @@ egui_dock = "0.6.0"
 livesplit-auto-splitting = { git = "https://github.com/LiveSplit/livesplit-core" }
 indexmap = "2.0.0"
 byte-unit = "4.0.19"
+hdrhistogram = { version = "7.5.2", default-features = false }

@@ -10,12 +10,18 @@ use std::{
 };
 
 use eframe::{
-    egui::{self, Grid, RichText, TextStyle, Visuals},
+    egui::{
+        self,
+        plot::{Bar, BarChart, Legend, Plot, VLine},
+        Grid, RichText, TextStyle, Visuals,
+    },
+    emath::Align,
     epaint::{FontFamily, FontId},
     App, Frame,
 };
 use egui_dock::{DockArea, NodeIndex, Style, Tree};
 use egui_file::FileDialog;
+use hdrhistogram::Histogram;
 use indexmap::IndexMap;
 use livesplit_auto_splitting::{
     time, Runtime, SettingValue, SettingsStore, Timer, TimerState, UserSettingKind,
@@ -27,6 +33,7 @@ enum Tab {
     Variables,
     Settings,
     Processes,
+    Performance,
 }
 
 fn main() {
@@ -69,7 +76,7 @@ fn main() {
 
             let timer = DebuggerTimer::default();
 
-            let mut tree = Tree::new(vec![Tab::Main]);
+            let mut tree = Tree::new(vec![Tab::Main, Tab::Performance]);
             let [left, right] = tree.split_right(NodeIndex::root(), 0.65, vec![Tab::Variables]);
             tree.split_below(right, 0.5, vec![Tab::Settings]);
             tree.split_below(left, 0.5, vec![Tab::Logs, Tab::Processes]);
@@ -85,6 +92,7 @@ fn main() {
                     slowest_tick: std::time::Duration::ZERO,
                     avg_tick_secs: 0.0,
                     timer,
+                    tick_times: Histogram::new(1).unwrap(),
                 },
             });
 
@@ -112,6 +120,7 @@ struct AppState {
     timer: DebuggerTimer,
     slowest_tick: std::time::Duration,
     avg_tick_secs: f64,
+    tick_times: Histogram<u64>,
 }
 
 struct TabViewer<'a> {
@@ -226,18 +235,27 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                     });
             }
             Tab::Logs => {
+                let mut scroll_to_end = false;
                 Grid::new("log_grid")
                     .num_columns(1)
                     .spacing([40.0, 4.0])
                     .striped(true)
                     .show(ui, |ui| {
-                        for log in &self.state.timer.0.borrow().logs {
+                        let mut timer = self.state.timer.0.borrow_mut();
+                        for log in &timer.logs {
                             ui.label(&**log);
                             ui.end_row();
+                        }
+                        if timer.logs.len() != timer.last_logs_len {
+                            timer.last_logs_len = timer.logs.len();
+                            scroll_to_end = true;
                         }
                     });
                 if ui.button("Clear").clicked() {
                     self.state.timer.0.borrow_mut().logs.clear();
+                }
+                if scroll_to_end {
+                    ui.scroll_to_cursor(Some(Align::Max));
                 }
             }
             Tab::Variables => {
@@ -337,6 +355,56 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                         }
                     });
             }
+            Tab::Performance => {
+                if ui.button("Clear").clicked() {
+                    self.state.tick_times.clear();
+                }
+
+                let mut right_x = 0.0;
+                let scale_y = 100.0 / self.state.tick_times.len() as f64;
+
+                let chart = BarChart::new(
+                    self.state
+                        .tick_times
+                        .iter_recorded()
+                        .map(|bar| {
+                            let left_x = right_x;
+                            right_x = bar.percentile();
+                            let mid_x = 0.5 * (left_x + right_x);
+                            Bar::new(mid_x, scale_y * bar.count_since_last_iteration() as f64)
+                                .name(format!(
+                                    "{}\n{:.2}th percentile",
+                                    fmt_duration(time::Duration::nanoseconds(
+                                        self.state.tick_times.value_at_percentile(mid_x as _) as _,
+                                    )),
+                                    mid_x
+                                ))
+                                .width(right_x - left_x)
+                        })
+                        .collect(),
+                )
+                .name("Tick Time");
+
+                Plot::new("Performance Plot")
+                    .legend(Legend::default())
+                    .x_axis_formatter(|x, _| format!("{x}th percentile"))
+                    .y_axis_formatter(|y, _| format!("{y}%"))
+                    .clamp_grid(true)
+                    .allow_zoom(true)
+                    .allow_drag(true)
+                    .show(ui, |plot_ui| {
+                        plot_ui.vline(
+                            VLine::new(
+                                self.state
+                                    .tick_times
+                                    .percentile_below(self.state.tick_times.mean() as _),
+                            )
+                            .name("Mean"),
+                        );
+                        plot_ui.vline(VLine::new(50.0).name("Median"));
+                        plot_ui.bar_chart(chart);
+                    });
+            }
         }
     }
 
@@ -347,6 +415,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
             Tab::Variables => "Variables",
             Tab::Settings => "Settings",
             Tab::Processes => "Processes",
+            Tab::Performance => "Performance",
         }
         .into()
     }
@@ -373,6 +442,7 @@ impl App for Debugger {
             if time_of_tick > self.state.slowest_tick {
                 self.state.slowest_tick = time_of_tick;
             }
+            self.state.tick_times += time_of_tick.as_nanos() as u64;
             self.state.avg_tick_secs =
                 0.999 * self.state.avg_tick_secs + 0.001 * time_of_tick.as_secs_f64();
             tick_rate =
@@ -430,6 +500,7 @@ impl AppState {
         };
         self.slowest_tick = std::time::Duration::ZERO;
         self.avg_tick_secs = 0.0;
+        self.tick_times.clear();
         let mut timer = self.timer.0.borrow_mut();
         if clear {
             timer.clear();
@@ -484,6 +555,7 @@ struct DebuggerTimerState {
     split_index: usize,
     variables: IndexMap<Box<str>, String>,
     logs: Vec<Box<str>>,
+    last_logs_len: usize,
 }
 
 #[derive(Copy, Clone, Default, PartialEq)]
