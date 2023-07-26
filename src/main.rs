@@ -2,7 +2,9 @@
 
 use std::{
     collections::BTreeMap,
-    env, fs,
+    env,
+    fs::{self, File},
+    io::Write,
     path::PathBuf,
     sync::{Arc, RwLock},
     thread,
@@ -318,9 +320,27 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                             scroll_to_end = true;
                         }
                     });
-                if ui.button("Clear").clicked() {
-                    self.state.timer.0.write().unwrap().logs.clear();
-                }
+                ui.horizontal(|ui| {
+                    if ui.button("Clear").clicked() {
+                        self.state.timer.0.write().unwrap().logs.clear();
+                    }
+                    if ui.button("Save").clicked() {
+                        if let Err(e) = File::create("auto_splitter_logs.txt").and_then(|mut f| {
+                            for log in &self.state.timer.0.read().unwrap().logs {
+                                writeln!(f, "{log}")?;
+                            }
+                            Ok(())
+                        }) {
+                            self.state
+                                .timer
+                                .0
+                                .write()
+                                .unwrap()
+                                .logs
+                                .push(format!("Failed to save log file: {}", e).into());
+                        }
+                    }
+                });
                 if scroll_to_end {
                     ui.scroll_to_cursor(Some(Align::Max));
                 }
