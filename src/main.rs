@@ -321,6 +321,13 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                 if ui.button("Clear").clicked() {
                     self.state.timer.0.write().unwrap().logs.clear();
                 }
+                if ui.button("Save").clicked() {
+                    let timer = self.state.timer.0.read().unwrap();
+                    let s = &timer.logs.iter().map(Box::as_ref).collect::<Vec<&str>>().join("\n");
+                    if let Err(_e) = fs::write("logs.txt", s) {
+
+                    }
+                }
                 if scroll_to_end {
                     ui.scroll_to_cursor(Some(Align::Max));
                 }
