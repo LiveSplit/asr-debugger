@@ -26,7 +26,7 @@ use egui_file::FileDialog;
 use hdrhistogram::Histogram;
 use indexmap::IndexMap;
 use livesplit_auto_splitting::{
-    time, Runtime, SettingValue, SettingsStore, Timer, TimerState, UserSettingKind,
+    time, Config, Runtime, SettingValue, Timer, TimerState, UserSettingKind,
 };
 
 enum Tab {
@@ -39,8 +39,6 @@ enum Tab {
 }
 
 fn main() {
-    env::set_var("WASMTIME_BACKTRACE_DETAILS", "1");
-
     let shared_state = Arc::new(RwLock::new(SharedState {
         runtime: None,
         tick_rate: std::time::Duration::ZERO,
@@ -100,8 +98,10 @@ fn main() {
                 tree,
                 state: AppState {
                     module_modified_time: None,
+                    script_modified_time: None,
                     module: Vec::new(),
                     path: None,
+                    script_path: None,
                     open_file_dialog: None,
                     shared_state,
                     timer,
@@ -150,8 +150,11 @@ fn runtime_thread(shared_state: Arc<RwLock<SharedState>>, timer: DebuggerTimer) 
                         .logs
                         .push(format!("Error: {e}").into())
                 };
+                shared_state.tick_rate
+            } else {
+                // Tick at 10 Hz when no runtime is loaded.
+                std::time::Duration::from_secs(1) / 10
             }
-            shared_state.tick_rate
         };
         next_tick += tick_rate;
 
@@ -175,8 +178,10 @@ struct Debugger {
 
 struct AppState {
     path: Option<PathBuf>,
+    script_path: Option<PathBuf>,
     module_modified_time: Option<SystemTime>,
-    open_file_dialog: Option<FileDialog>,
+    script_modified_time: Option<SystemTime>,
+    open_file_dialog: Option<(FileDialog, bool)>,
     module: Vec<u8>,
     shared_state: Arc<RwLock<SharedState>>,
     timer: DebuggerTimer,
@@ -202,17 +207,37 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                     .spacing([40.0, 4.0])
                     .striped(true)
                     .show(ui, |ui| {
-                        ui.label("File");
+                        ui.label("WASM File");
                         ui.horizontal(|ui| {
                             if ui.button("Open").clicked() {
                                 let mut dialog = FileDialog::open_file(self.state.path.clone());
                                 dialog.open();
-                                self.state.open_file_dialog = Some(dialog);
+                                self.state.open_file_dialog = Some((dialog, true));
                             }
                             if self.state.shared_state.read().unwrap().runtime.is_some() {
                                 if let Some(path) = &self.state.path {
                                     if ui.button("Reload").clicked() {
                                         self.state.set_path(path.clone(), false);
+                                    }
+                                }
+                            }
+                        });
+                        ui.end_row();
+
+                        ui.label("Script File")
+                            .on_hover_text("This is only necessary if the WASM file by itself is a script runtime.");
+
+                        ui.horizontal(|ui| {
+                            if ui.button("Open").clicked() {
+                                let mut dialog =
+                                    FileDialog::open_file(self.state.script_path.clone());
+                                dialog.open();
+                                self.state.open_file_dialog = Some((dialog, false));
+                            }
+                            if self.state.shared_state.read().unwrap().runtime.is_some() {
+                                if let Some(script_path) = &self.state.script_path {
+                                    if ui.button("Reload").clicked() {
+                                        self.state.set_script_path(script_path.clone());
                                     }
                                 }
                             }
@@ -388,10 +413,16 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                                                 setting.key.clone(),
                                                 SettingValue::Bool(value),
                                             );
+
+                                            let mut config = Config::default();
+                                            config.settings_store = Some(settings);
+                                            config.interpreter_script_path =
+                                                self.state.script_path.as_deref();
+
                                             self.new_runtime = match Runtime::new(
                                                 &self.state.module,
                                                 self.state.timer.clone(),
-                                                settings,
+                                                config,
                                             ) {
                                                 Ok(r) => Some(r),
                                                 Err(e) => {
@@ -524,11 +555,24 @@ impl App for Debugger {
                 self.state.set_path(path.clone(), false);
             }
         }
+        if let Some(script_path) = &self.state.script_path {
+            if fs::metadata(script_path)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                > self.state.script_modified_time
+            {
+                self.state.set_script_path(script_path.clone());
+            }
+        }
 
-        if let Some(dialog) = &mut self.state.open_file_dialog {
+        if let Some((dialog, is_wasm)) = &mut self.state.open_file_dialog {
             if dialog.show(ctx).selected() {
                 if let Some(file) = dialog.path().map(ToOwned::to_owned) {
-                    self.state.set_path(file, true);
+                    if *is_wasm {
+                        self.state.set_path(file, true);
+                    } else {
+                        self.state.set_script_path(file);
+                    }
                 }
             }
         }
@@ -556,19 +600,22 @@ impl AppState {
         self.path = Some(file);
         {
             let mut shared_state = self.shared_state.write().unwrap();
-            shared_state.runtime =
-                match Runtime::new(&self.module, self.timer.clone(), SettingsStore::new()) {
-                    Ok(r) => Some(r),
-                    Err(e) => {
-                        self.timer
-                            .0
-                            .write()
-                            .unwrap()
-                            .logs
-                            .push(format!("Failed loading the WASM file: {e:?}").into());
-                        None
-                    }
-                };
+
+            let mut config = Config::default();
+            config.interpreter_script_path = self.script_path.as_deref();
+
+            shared_state.runtime = match Runtime::new(&self.module, self.timer.clone(), config) {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    self.timer
+                        .0
+                        .write()
+                        .unwrap()
+                        .logs
+                        .push(format!("Failed loading the WASM file: {e:?}").into());
+                    None
+                }
+            };
             shared_state.slowest_tick = std::time::Duration::ZERO;
             shared_state.avg_tick_secs = 0.0;
             shared_state.tick_times.clear();
@@ -586,6 +633,23 @@ impl AppState {
             }
             .into(),
         );
+    }
+
+    fn set_script_path(&mut self, file: PathBuf) {
+        let is_reload = Some(file.as_path()) == self.script_path.as_deref();
+        self.script_modified_time = fs::metadata(&file).ok().and_then(|m| m.modified().ok());
+        self.script_path = Some(file);
+        self.timer.0.write().unwrap().logs.push(
+            if is_reload {
+                "Script reloaded."
+            } else {
+                "Script loaded."
+            }
+            .into(),
+        );
+        if let Some(path) = self.path.clone() {
+            self.set_path(path, false);
+        }
     }
 }
 
