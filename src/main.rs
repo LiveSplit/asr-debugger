@@ -21,7 +21,7 @@ use eframe::{
     epaint::{FontFamily, FontId},
     App, Frame,
 };
-use egui_dock::{DockArea, NodeIndex, Style, Tree};
+use egui_dock::{DockArea, DockState, NodeIndex, Style};
 use egui_file::FileDialog;
 use hdrhistogram::Histogram;
 use indexmap::IndexMap;
@@ -89,13 +89,14 @@ fn main() {
             // Mutate global style with above changes
             cc.egui_ctx.set_style(style);
 
-            let mut tree = Tree::new(vec![Tab::Main, Tab::Performance]);
+            let mut dock_state = DockState::new(vec![Tab::Main, Tab::Performance]);
+            let tree = dock_state.main_surface_mut();
             let [left, right] = tree.split_right(NodeIndex::root(), 0.65, vec![Tab::Variables]);
             tree.split_below(right, 0.5, vec![Tab::Settings]);
             tree.split_below(left, 0.5, vec![Tab::Logs, Tab::Processes]);
 
             let mut app = Box::new(Debugger {
-                tree,
+                dock_state,
                 state: AppState {
                     module_modified_time: None,
                     script_modified_time: None,
@@ -172,7 +173,7 @@ fn runtime_thread(shared_state: Arc<RwLock<SharedState>>, timer: DebuggerTimer) 
 }
 
 struct Debugger {
-    tree: Tree<Tab>,
+    dock_state: DockState<Tab>,
     state: AppState,
 }
 
@@ -195,7 +196,7 @@ struct TabViewer<'a> {
 impl egui_dock::TabViewer for TabViewer<'_> {
     type Tab = Tab;
 
-    fn on_close(&mut self, _tab: &mut Self::Tab) -> bool {
+    fn closeable(&mut self, _: &mut Self::Tab) -> bool {
         false
     }
 
@@ -418,6 +419,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                                             config.settings_store = Some(settings);
                                             config.interpreter_script_path =
                                                 self.state.script_path.as_deref();
+                                            config.debug_info = true;
 
                                             self.new_runtime = match Runtime::new(
                                                 &self.state.module,
@@ -582,7 +584,8 @@ impl App for Debugger {
             new_runtime: None,
         };
 
-        DockArea::new(&mut self.tree)
+        DockArea::new(&mut self.dock_state)
+            .show_window_close_buttons(false)
             .style(Style::from_egui(ctx.style().as_ref()))
             .show(ctx, &mut tab_viewer);
 
@@ -598,15 +601,18 @@ impl AppState {
         self.module = fs::read(&file).unwrap_or_default();
         self.module_modified_time = fs::metadata(&file).ok().and_then(|m| m.modified().ok());
         self.path = Some(file);
+        let mut succeeded = true;
         {
             let mut shared_state = self.shared_state.write().unwrap();
 
             let mut config = Config::default();
             config.interpreter_script_path = self.script_path.as_deref();
+            config.debug_info = true;
 
             shared_state.runtime = match Runtime::new(&self.module, self.timer.clone(), config) {
                 Ok(r) => Some(r),
                 Err(e) => {
+                    succeeded = false;
                     self.timer
                         .0
                         .write()
@@ -625,14 +631,16 @@ impl AppState {
             timer.clear();
         }
         timer.variables.clear();
-        timer.logs.push(
-            if is_reload {
-                "Auto Splitter reloaded."
-            } else {
-                "Auto Splitter loaded."
-            }
-            .into(),
-        );
+        if succeeded {
+            timer.logs.push(
+                if is_reload {
+                    "Auto Splitter reloaded."
+                } else {
+                    "Auto Splitter loaded."
+                }
+                .into(),
+            );
+        }
     }
 
     fn set_script_path(&mut self, file: PathBuf) {
@@ -808,6 +816,6 @@ impl DebuggerTimerState {
     }
 
     fn clear(&mut self) {
-        *self = Default::default();
+        self.reset();
     }
 }
