@@ -12,17 +12,14 @@ use std::{
 };
 
 use eframe::{
-    egui::{
-        self,
-        plot::{Bar, BarChart, Legend, Plot, VLine},
-        Grid, RichText, TextStyle, Visuals,
-    },
+    egui::{self, Grid, RichText, TextStyle, Visuals},
     emath::Align,
     epaint::{FontFamily, FontId},
     App, Frame,
 };
 use egui_dock::{DockArea, DockState, NodeIndex, Style};
 use egui_file::FileDialog;
+use egui_plot::{Bar, BarChart, Legend, Plot, VLine};
 use hdrhistogram::Histogram;
 use indexmap::IndexMap;
 use livesplit_auto_splitting::{
@@ -512,8 +509,17 @@ impl egui_dock::TabViewer for TabViewer<'_> {
 
                 Plot::new("Performance Plot")
                     .legend(Legend::default())
-                    .x_axis_formatter(|x, _| format!("{x}th percentile"))
-                    .y_axis_formatter(|y, _| format!("{y}%"))
+                    .x_axis_formatter(|x, chars, _| {
+                        let mut text = x.to_string();
+                        if chars >= text.len() + 2 {
+                            text.push_str("th");
+                        }
+                        if chars >= text.len() + 11 {
+                            text.push_str(" percentile");
+                        }
+                        text
+                    })
+                    .y_axis_formatter(|y, _, _| format!("{y}%"))
                     .clamp_grid(true)
                     .allow_zoom(true)
                     .allow_drag(true)
