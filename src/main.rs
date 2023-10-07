@@ -2,7 +2,6 @@
 
 use std::{
     collections::BTreeMap,
-    env,
     fs::{self, File},
     io::Write,
     path::PathBuf,
@@ -11,6 +10,7 @@ use std::{
     time::{Instant, SystemTime},
 };
 
+use clap::Parser;
 use eframe::{
     egui::{self, Grid, RichText, TextStyle, Visuals},
     emath::Align,
@@ -23,7 +23,7 @@ use egui_plot::{Bar, BarChart, Legend, Plot, VLine};
 use hdrhistogram::Histogram;
 use indexmap::IndexMap;
 use livesplit_auto_splitting::{
-    time, Config, Runtime, SettingValue, Timer, TimerState, UserSettingKind,
+    time, Config, Runtime, SettingValue, SettingsStore, Timer, TimerState, UserSettingKind,
 };
 
 enum Tab {
@@ -35,7 +35,16 @@ enum Tab {
     Performance,
 }
 
+#[derive(Parser)]
+struct Args {
+    #[arg(short, long)]
+    debug: bool,
+    wasm_path: Option<PathBuf>,
+}
+
 fn main() {
+    let args = Args::parse();
+
     let shared_state = Arc::new(RwLock::new(SharedState {
         runtime: None,
         tick_rate: std::time::Duration::ZERO,
@@ -55,7 +64,7 @@ fn main() {
     eframe::run_native(
         "Auto Splitting Runtime Debugger",
         options,
-        Box::new(|cc| {
+        Box::new(move |cc| {
             cc.egui_ctx.set_visuals(Visuals::dark());
             let mut style = (*cc.egui_ctx.style()).clone();
 
@@ -88,25 +97,26 @@ fn main() {
 
             let mut dock_state = DockState::new(vec![Tab::Main, Tab::Performance]);
             let tree = dock_state.main_surface_mut();
-            let [left, right] = tree.split_right(NodeIndex::root(), 0.65, vec![Tab::Variables]);
-            tree.split_below(right, 0.5, vec![Tab::Settings]);
-            tree.split_below(left, 0.5, vec![Tab::Logs, Tab::Processes]);
+            let [left, right] = tree.split_right(NodeIndex::root(), 0.65, vec![Tab::Settings]);
+            tree.split_below(right, 0.55, vec![Tab::Variables]);
+            tree.split_below(left, 0.55, vec![Tab::Logs, Tab::Processes]);
 
             let mut app = Box::new(Debugger {
                 dock_state,
                 state: AppState {
-                    module_modified_time: None,
-                    script_modified_time: None,
-                    module: Vec::new(),
                     path: None,
                     script_path: None,
+                    module_modified_time: None,
+                    script_modified_time: None,
+                    optimize: !args.debug,
                     open_file_dialog: None,
+                    module: Vec::new(),
                     shared_state,
                     timer,
                 },
             });
 
-            if let Some(path) = env::args().nth(1).map(From::from) {
+            if let Some(path) = args.wasm_path {
                 app.state.set_path(path, false);
             }
 
@@ -179,6 +189,7 @@ struct AppState {
     script_path: Option<PathBuf>,
     module_modified_time: Option<SystemTime>,
     script_modified_time: Option<SystemTime>,
+    optimize: bool,
     open_file_dialog: Option<(FileDialog, bool)>,
     module: Vec<u8>,
     shared_state: Arc<RwLock<SharedState>>,
@@ -205,7 +216,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                     .spacing([40.0, 4.0])
                     .striped(true)
                     .show(ui, |ui| {
-                        ui.label("WASM File");
+                        ui.label("WASM File").on_hover_text("The main auto splitter file to run.");
                         ui.horizontal(|ui| {
                             if ui.button("Open").clicked() {
                                 let mut dialog = FileDialog::open_file(self.state.path.clone());
@@ -223,7 +234,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                         ui.end_row();
 
                         ui.label("Script File")
-                            .on_hover_text("This is only necessary if the WASM file by itself is a script runtime.");
+                            .on_hover_text("A script file that by itself is run by the auto splitter. This is only necessary if the WASM file by itself is a script runtime.");
 
                         ui.horizontal(|ui| {
                             if ui.button("Open").clicked() {
@@ -242,7 +253,11 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                         });
                         ui.end_row();
 
-                        ui.label("Tick Rate");
+                        ui.label("Optimize").on_hover_text("Whether to optimize the WASM file. Don't activate this when you want to step through the source code.");
+                        ui.checkbox(&mut self.state.optimize, "");
+                        ui.end_row();
+
+                        ui.label("Tick Rate").on_hover_text("The duration between individual calls to the update function.");
                         ui.label(fmt_duration(
                             time::Duration::try_from(
                                 self.state.shared_state.read().unwrap().tick_rate,
@@ -251,13 +266,13 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                         ));
                         ui.end_row();
 
-                        ui.label("Avg. Tick Time");
+                        ui.label("Avg. Tick Time").on_hover_text("The average duration of the execution of the update function.");
                         ui.label(fmt_duration(time::Duration::seconds_f64(
                             self.state.shared_state.read().unwrap().avg_tick_secs,
                         )));
                         ui.end_row();
 
-                        ui.label("Slowest Tick");
+                        ui.label("Slowest Tick").on_hover_text("The slowest duration of the execution of the update function.");
                         ui.horizontal(|ui| {
                             ui.label(fmt_duration(
                                 time::Duration::try_from(
@@ -275,7 +290,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                         {
                             let mut state = self.state.timer.0.write().unwrap();
 
-                            ui.label("Timer State");
+                            ui.label("Timer State").on_hover_text("The current state of the timer.");
                             ui.horizontal(|ui| {
                                 ui.label(timer_state_to_str(state.timer_state));
                                 if state.timer_state == TimerState::NotRunning {
@@ -288,22 +303,22 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                             });
                             ui.end_row();
 
-                            ui.label("Game Time");
+                            ui.label("Game Time").on_hover_text("The currently specified game time.");
                             ui.label(fmt_duration(state.game_time));
                             ui.end_row();
 
-                            ui.label("Game Time State");
+                            ui.label("Game Time State").on_hover_text("The current state of the game timer.");
                             ui.label(state.game_time_state.to_str());
                             ui.end_row();
 
-                            ui.label("Split Index");
+                            ui.label("Split Index").on_hover_text("The index of the current split.");
                             ui.label(state.split_index.to_string());
                             ui.end_row();
                         }
 
                         if let Some(runtime) = &self.state.shared_state.read().unwrap().runtime {
                             let memory = runtime.memory();
-                            ui.label("Memory");
+                            ui.label("Memory").on_hover_text("The current amount of memory used by the auto splitter (stack, heap, global variables). This excludes the size of the code itself.");
                             ui.horizontal(|ui| {
                                 ui.label(
                                     byte_unit::Byte::from_bytes(memory.len() as _)
@@ -412,11 +427,8 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                                                 SettingValue::Bool(value),
                                             );
 
-                                            let mut config = Config::default();
-                                            config.settings_store = Some(settings);
-                                            config.interpreter_script_path =
-                                                self.state.script_path.as_deref();
-                                            config.debug_info = true;
+                                            let config =
+                                                self.state.build_runtime_config(Some(settings));
 
                                             self.new_runtime = match Runtime::new(
                                                 &self.state.module,
@@ -611,9 +623,7 @@ impl AppState {
         {
             let mut shared_state = self.shared_state.write().unwrap();
 
-            let mut config = Config::default();
-            config.interpreter_script_path = self.script_path.as_deref();
-            config.debug_info = true;
+            let config = self.build_runtime_config(None);
 
             shared_state.runtime = match Runtime::new(&self.module, self.timer.clone(), config) {
                 Ok(r) => Some(r),
@@ -647,6 +657,15 @@ impl AppState {
                 .into(),
             );
         }
+    }
+
+    fn build_runtime_config(&self, settings_store: Option<SettingsStore>) -> Config<'_> {
+        let mut config = Config::default();
+        config.settings_store = settings_store;
+        config.interpreter_script_path = self.script_path.as_deref();
+        config.debug_info = true;
+        config.optimize = self.optimize;
+        config
     }
 
     fn set_script_path(&mut self, file: PathBuf) {

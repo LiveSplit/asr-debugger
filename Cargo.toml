@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 byte-unit = "4.0.19"
+clap = { version = "4.4.6", default-features = false, features = ["derive", "std"] }
 eframe = "0.23.0"
 egui_dock = "0.8.0"
 egui_file = "0.11.0"
