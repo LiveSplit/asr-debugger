@@ -5,12 +5,14 @@ use std::{
     fs::{self, File},
     io::Write,
     path::PathBuf,
-    sync::{Arc, RwLock},
+    sync::{atomic::AtomicUsize, Arc, Mutex, RwLock, RwLockWriteGuard},
     thread,
-    time::{Instant, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
+use atomic::Atomic;
 use clap::Parser;
+use clear_vec::{Clear, ClearVec};
 use eframe::{
     egui::{self, Grid, RichText, TextStyle, Visuals},
     emath::Align,
@@ -25,6 +27,8 @@ use indexmap::IndexMap;
 use livesplit_auto_splitting::{
     time, Config, Runtime, SettingValue, SettingsStore, Timer, TimerState, UserSettingKind,
 };
+
+mod clear_vec;
 
 enum Tab {
     Main,
@@ -45,13 +49,15 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
-    let shared_state = Arc::new(RwLock::new(SharedState {
-        runtime: None,
-        tick_rate: std::time::Duration::ZERO,
-        slowest_tick: std::time::Duration::ZERO,
-        avg_tick_secs: 0.0,
-        tick_times: Histogram::new(1).unwrap(),
-    }));
+    let shared_state = Arc::new(SharedState {
+        runtime: RwLock::new(None),
+        memory_usage: AtomicUsize::new(0),
+        tick_rate: Mutex::new(std::time::Duration::ZERO),
+        slowest_tick: Mutex::new(std::time::Duration::ZERO),
+        avg_tick_secs: Atomic::new(0.0),
+        tick_times: Mutex::new(Histogram::new(1).unwrap()),
+        processes: Mutex::new(ClearVec::new()),
+    });
     let timer = DebuggerTimer::default();
 
     thread::spawn({
@@ -126,30 +132,97 @@ fn main() {
     .unwrap();
 }
 
-struct SharedState {
-    runtime: Option<Runtime<DebuggerTimer>>,
-    tick_rate: std::time::Duration,
-    slowest_tick: std::time::Duration,
-    avg_tick_secs: f64,
-    tick_times: Histogram<u64>,
+#[derive(Default)]
+struct ProcessInfo {
+    path: String,
+    pid: String,
 }
 
-fn runtime_thread(shared_state: Arc<RwLock<SharedState>>, timer: DebuggerTimer) {
+impl Clear for ProcessInfo {
+    fn clear(&mut self) {
+        self.path.clear();
+        self.pid.clear();
+    }
+}
+
+struct SharedState {
+    runtime: RwLock<Option<Runtime<DebuggerTimer>>>,
+    tick_rate: Mutex<std::time::Duration>,
+    slowest_tick: Mutex<std::time::Duration>,
+    memory_usage: AtomicUsize,
+    avg_tick_secs: Atomic<f64>,
+    tick_times: Mutex<Histogram<u64>>,
+    processes: Mutex<ClearVec<ProcessInfo>>,
+}
+
+impl SharedState {
+    fn prepare_to_replace_runtime(&self) -> RwLockWriteGuard<'_, Option<Runtime<DebuggerTimer>>> {
+        if let Some(guard) = self.try_write_runtime() {
+            return guard;
+        }
+        self.kill_runtime();
+        self.runtime.write().unwrap()
+    }
+
+    fn try_write_runtime(&self) -> Option<RwLockWriteGuard<'_, Option<Runtime<DebuggerTimer>>>> {
+        for _ in 0..100 {
+            if let Ok(guard) = self.runtime.try_write() {
+                return Some(guard);
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        None
+    }
+
+    fn kill_runtime(&self) {
+        if let Some(runtime) = &*self.runtime.read().unwrap() {
+            runtime.interrupt_handle().interrupt();
+        }
+    }
+}
+
+fn runtime_thread(shared_state: Arc<SharedState>, timer: DebuggerTimer) {
     let mut next_tick = Instant::now();
     loop {
         let tick_rate = {
-            let shared_state = &mut *shared_state.write().unwrap();
-            if let Some(runtime) = &mut shared_state.runtime {
+            if let Some(runtime) = &*shared_state.runtime.read().unwrap() {
+                let mut runtime_lock = runtime.lock();
                 let now = Instant::now();
-                let res = runtime.update();
+                let res = runtime_lock.update();
                 let time_of_tick = now.elapsed();
-                if time_of_tick > shared_state.slowest_tick {
-                    shared_state.slowest_tick = time_of_tick;
+                let memory_usage = runtime_lock.memory().len();
+                {
+                    let mut processes = shared_state.processes.lock().unwrap();
+                    processes.clear();
+                    runtime_lock.attached_processes().for_each(|process| {
+                        use std::fmt::Write;
+                        let element = processes.push();
+                        let _ = write!(element.pid, "{}", process.pid());
+                        element
+                            .path
+                            .push_str(process.path().unwrap_or("Unnamed Process"));
+                    });
                 }
-                shared_state.tick_rate = runtime.tick_rate();
-                shared_state.tick_times += time_of_tick.as_nanos() as u64;
-                shared_state.avg_tick_secs =
-                    0.999 * shared_state.avg_tick_secs + 0.001 * time_of_tick.as_secs_f64();
+                drop(runtime_lock);
+
+                shared_state
+                    .memory_usage
+                    .store(memory_usage, atomic::Ordering::Relaxed);
+
+                {
+                    let mut slowest_tick = shared_state.slowest_tick.lock().unwrap();
+                    if time_of_tick > *slowest_tick {
+                        *slowest_tick = time_of_tick;
+                    }
+                }
+
+                *shared_state.tick_rate.lock().unwrap() = runtime.tick_rate();
+                *shared_state.tick_times.lock().unwrap() += time_of_tick.as_nanos() as u64;
+                shared_state.avg_tick_secs.store(
+                    0.999 * shared_state.avg_tick_secs.load(atomic::Ordering::Relaxed)
+                        + 0.001 * time_of_tick.as_secs_f64(),
+                    atomic::Ordering::Relaxed,
+                );
                 if let Err(e) = res {
                     timer
                         .0
@@ -158,8 +231,10 @@ fn runtime_thread(shared_state: Arc<RwLock<SharedState>>, timer: DebuggerTimer) 
                         .logs
                         .push(format!("Error: {e}").into())
                 };
-                shared_state.tick_rate
+                runtime.tick_rate()
             } else {
+                shared_state.processes.lock().unwrap().clear();
+
                 // Tick at 10 Hz when no runtime is loaded.
                 std::time::Duration::from_secs(1) / 10
             }
@@ -192,7 +267,7 @@ struct AppState {
     optimize: bool,
     open_file_dialog: Option<(FileDialog, bool)>,
     module: Vec<u8>,
-    shared_state: Arc<RwLock<SharedState>>,
+    shared_state: Arc<SharedState>,
     timer: DebuggerTimer,
 }
 
@@ -223,10 +298,13 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                                 dialog.open();
                                 self.state.open_file_dialog = Some((dialog, true));
                             }
-                            if self.state.shared_state.read().unwrap().runtime.is_some() {
+                            if self.state.shared_state.runtime.read().unwrap().is_some() {
                                 if let Some(path) = &self.state.path {
                                     if ui.button("Reload").clicked() {
                                         self.state.set_path(path.clone(), false);
+                                    }
+                                    if ui.button("Kill").clicked() {
+                                        self.state.shared_state.kill_runtime();
                                     }
                                 }
                             }
@@ -243,7 +321,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                                 dialog.open();
                                 self.state.open_file_dialog = Some((dialog, false));
                             }
-                            if self.state.shared_state.read().unwrap().runtime.is_some() {
+                            if self.state.shared_state.runtime.read().unwrap().is_some() {
                                 if let Some(script_path) = &self.state.script_path {
                                     if ui.button("Reload").clicked() {
                                         self.state.set_script_path(script_path.clone());
@@ -260,7 +338,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                         ui.label("Tick Rate").on_hover_text("The duration between individual calls to the update function.");
                         ui.label(fmt_duration(
                             time::Duration::try_from(
-                                self.state.shared_state.read().unwrap().tick_rate,
+                                *self.state.shared_state.tick_rate.lock().unwrap(),
                             )
                             .unwrap_or_default(),
                         ));
@@ -268,7 +346,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
 
                         ui.label("Avg. Tick Time").on_hover_text("The average duration of the execution of the update function.");
                         ui.label(fmt_duration(time::Duration::seconds_f64(
-                            self.state.shared_state.read().unwrap().avg_tick_secs,
+                            self.state.shared_state.avg_tick_secs.load(atomic::Ordering::Relaxed),
                         )));
                         ui.end_row();
 
@@ -276,12 +354,12 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                         ui.horizontal(|ui| {
                             ui.label(fmt_duration(
                                 time::Duration::try_from(
-                                    self.state.shared_state.read().unwrap().slowest_tick,
+                                    *self.state.shared_state.slowest_tick.lock().unwrap(),
                                 )
                                 .unwrap_or_default(),
                             ));
                             if ui.button("Reset").clicked() {
-                                self.state.shared_state.write().unwrap().slowest_tick =
+                                *self.state.shared_state.slowest_tick.lock().unwrap() =
                                     std::time::Duration::ZERO;
                             }
                         });
@@ -316,29 +394,40 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                             ui.end_row();
                         }
 
-                        if let Some(runtime) = &self.state.shared_state.read().unwrap().runtime {
-                            let memory = runtime.memory();
-                            ui.label("Memory").on_hover_text("The current amount of memory used by the auto splitter (stack, heap, global variables). This excludes the size of the code itself.");
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    byte_unit::Byte::from_bytes(memory.len() as _)
-                                        .get_appropriate_unit(true)
-                                        .to_string(),
-                                );
-                                if ui.button("Dump").clicked() {
-                                    if let Err(e) = fs::write("memory_dump.bin", memory) {
-                                        self.state
+                        let memory_usage = self.state.shared_state.memory_usage.load(atomic::Ordering::Relaxed);
+                        ui.label("Memory").on_hover_text("The current amount of memory used by the auto splitter (stack, heap, global variables). This excludes the size of the code itself.");
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                byte_unit::Byte::from_bytes(memory_usage as _)
+                                    .get_appropriate_unit(true)
+                                    .to_string(),
+                            );
+                            if ui.button("Dump").clicked() {
+                                if let Some(runtime) = self.state.shared_state.try_write_runtime() {
+                                    if let Some(runtime) = &*runtime {
+                                        let result = fs::write("memory_dump.bin", runtime.lock().memory());
+                                        if let Err(e) = result {
+                                            self.state
+                                                .timer
+                                                .0
+                                                .write()
+                                                .unwrap()
+                                                .logs
+                                                .push(format!("Failed to dump memory: {}", e).into());
+                                        }
+                                    }
+                                } else {
+                                    self.state
                                             .timer
                                             .0
                                             .write()
                                             .unwrap()
                                             .logs
-                                            .push(format!("Failed to dump memory: {}", e).into());
-                                    }
+                                            .push("Timed out waiting for auto splitter.".into());
                                 }
-                            });
-                            ui.end_row();
-                        }
+                            }
+                        });
+                        ui.end_row();
                     });
             }
             Tab::Logs => {
@@ -406,8 +495,8 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                         ui.label(RichText::new("Key").strong().underline());
                         ui.label(RichText::new("Setting").strong().underline());
                         ui.end_row();
-                        if let Some(runtime) = &self.state.shared_state.read().unwrap().runtime {
-                            for setting in runtime.user_settings() {
+                        if let Some(runtime) = &*self.state.shared_state.runtime.read().unwrap() {
+                            for setting in runtime.user_settings().iter() {
                                 ui.label(&*setting.key);
                                 match setting.kind {
                                     UserSettingKind::Bool { default_value } => {
@@ -475,30 +564,25 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                         ui.label(RichText::new("PID").strong().underline());
                         ui.label(RichText::new("Path").strong().underline());
                         ui.end_row();
-                        if let Some(runtime) = &self.state.shared_state.read().unwrap().runtime {
-                            for process in runtime.attached_processes() {
-                                ui.label(process.pid().to_string());
-                                ui.label(process.path().unwrap_or("Unnamed Process"));
-                                ui.end_row();
-                            }
+                        for process in &*self.state.shared_state.processes.lock().unwrap() {
+                            ui.label(&process.pid);
+                            ui.label(&process.path);
+                            ui.end_row();
                         }
                     });
             }
             Tab::Performance => {
+                let mut histogram = self.state.shared_state.tick_times.lock().unwrap();
+
                 if ui.button("Clear").clicked() {
-                    self.state.shared_state.write().unwrap().tick_times.clear();
+                    histogram.clear();
                 }
 
-                let shared_state = self.state.shared_state.read().unwrap();
                 let mut right_x = 0.0;
-                let scale_y = 100.0 / shared_state.tick_times.len() as f64;
+                let scale_y = 100.0 / histogram.len() as f64;
 
                 let chart = BarChart::new(
-                    self.state
-                        .shared_state
-                        .read()
-                        .unwrap()
-                        .tick_times
+                    histogram
                         .iter_recorded()
                         .map(|bar| {
                             let left_x = right_x;
@@ -508,8 +592,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                                 .name(format!(
                                     "{}\n{:.2}th percentile",
                                     fmt_duration(time::Duration::nanoseconds(
-                                        shared_state.tick_times.value_at_percentile(mid_x as _)
-                                            as _,
+                                        histogram.value_at_percentile(mid_x as _) as _,
                                     )),
                                     mid_x
                                 ))
@@ -537,12 +620,8 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                     .allow_drag(true)
                     .show(ui, |plot_ui| {
                         plot_ui.vline(
-                            VLine::new(
-                                shared_state
-                                    .tick_times
-                                    .percentile_below(shared_state.tick_times.mean() as _),
-                            )
-                            .name("Mean"),
+                            VLine::new(histogram.percentile_below(histogram.mean() as _))
+                                .name("Mean"),
                         );
                         plot_ui.vline(VLine::new(50.0).name("Median"));
                         plot_ui.bar_chart(chart);
@@ -608,7 +687,8 @@ impl App for Debugger {
             .show(ctx, &mut tab_viewer);
 
         if tab_viewer.new_runtime.is_some() {
-            self.state.shared_state.write().unwrap().runtime = tab_viewer.new_runtime;
+            let runtime = tab_viewer.new_runtime;
+            *self.state.shared_state.prepare_to_replace_runtime() = runtime;
         }
     }
 }
@@ -620,12 +700,10 @@ impl AppState {
         self.module_modified_time = fs::metadata(&file).ok().and_then(|m| m.modified().ok());
         self.path = Some(file);
         let mut succeeded = true;
-        {
-            let mut shared_state = self.shared_state.write().unwrap();
+        let config = self.build_runtime_config(None);
 
-            let config = self.build_runtime_config(None);
-
-            shared_state.runtime = match Runtime::new(&self.module, self.timer.clone(), config) {
+        *self.shared_state.prepare_to_replace_runtime() =
+            match Runtime::new(&self.module, self.timer.clone(), config) {
                 Ok(r) => Some(r),
                 Err(e) => {
                     succeeded = false;
@@ -638,10 +716,12 @@ impl AppState {
                     None
                 }
             };
-            shared_state.slowest_tick = std::time::Duration::ZERO;
-            shared_state.avg_tick_secs = 0.0;
-            shared_state.tick_times.clear();
-        }
+        *self.shared_state.slowest_tick.lock().unwrap() = std::time::Duration::ZERO;
+        self.shared_state
+            .avg_tick_secs
+            .store(0.0, atomic::Ordering::Relaxed);
+        self.shared_state.tick_times.lock().unwrap().clear();
+
         let mut timer = self.timer.0.write().unwrap();
         if clear {
             timer.clear();

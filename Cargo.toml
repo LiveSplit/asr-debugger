@@ -6,6 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+atomic = "0.6.0"
 byte-unit = "4.0.19"
 clap = { version = "4.4.6", default-features = false, features = ["derive", "std"] }
 eframe = "0.23.0"
