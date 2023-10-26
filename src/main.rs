@@ -5,7 +5,10 @@ use std::{
     fs::{self, File},
     io::Write,
     path::PathBuf,
-    sync::{atomic::AtomicUsize, Arc, Mutex, RwLock, RwLockWriteGuard},
+    sync::{
+        atomic::{AtomicU64, AtomicUsize},
+        Arc, Mutex, RwLock, RwLockWriteGuard,
+    },
     thread,
     time::{Duration, Instant, SystemTime},
 };
@@ -25,16 +28,18 @@ use egui_plot::{Bar, BarChart, Legend, Plot, VLine};
 use hdrhistogram::Histogram;
 use indexmap::IndexMap;
 use livesplit_auto_splitting::{
-    time, Config, Runtime, SettingValue, SettingsStore, Timer, TimerState, UserSettingKind,
+    time, Config, Runtime, SettingValue, SettingsMap, Timer, TimerState, UserSettingKind,
 };
 
 mod clear_vec;
 
 enum Tab {
     Main,
+    Statistics,
     Logs,
     Variables,
-    Settings,
+    SettingsGUI,
+    SettingsMap,
     Processes,
     Performance,
 }
@@ -52,6 +57,7 @@ fn main() {
     let shared_state = Arc::new(SharedState {
         runtime: RwLock::new(None),
         memory_usage: AtomicUsize::new(0),
+        handles: AtomicU64::new(0),
         tick_rate: Mutex::new(std::time::Duration::ZERO),
         slowest_tick: Mutex::new(std::time::Duration::ZERO),
         avg_tick_secs: Atomic::new(0.0),
@@ -103,9 +109,9 @@ fn main() {
 
             let mut dock_state = DockState::new(vec![Tab::Main, Tab::Performance]);
             let tree = dock_state.main_surface_mut();
-            let [left, right] = tree.split_right(NodeIndex::root(), 0.65, vec![Tab::Settings]);
-            tree.split_below(right, 0.55, vec![Tab::Variables]);
-            tree.split_below(left, 0.55, vec![Tab::Logs, Tab::Processes]);
+            let [left, right] = tree.split_right(NodeIndex::root(), 0.65, vec![Tab::SettingsGUI]);
+            tree.split_below(right, 0.5, vec![Tab::Variables, Tab::SettingsMap]);
+            tree.split_below(left, 0.5, vec![Tab::Logs, Tab::Statistics, Tab::Processes]);
 
             let mut app = Box::new(Debugger {
                 dock_state,
@@ -150,6 +156,7 @@ struct SharedState {
     tick_rate: Mutex<std::time::Duration>,
     slowest_tick: Mutex<std::time::Duration>,
     memory_usage: AtomicUsize,
+    handles: AtomicU64,
     avg_tick_secs: Atomic<f64>,
     tick_times: Mutex<Histogram<u64>>,
     processes: Mutex<ClearVec<ProcessInfo>>,
@@ -203,11 +210,15 @@ fn runtime_thread(shared_state: Arc<SharedState>, timer: DebuggerTimer) {
                             .push_str(process.path().unwrap_or("Unnamed Process"));
                     });
                 }
+                let handles = runtime_lock.handles();
                 drop(runtime_lock);
 
                 shared_state
                     .memory_usage
                     .store(memory_usage, atomic::Ordering::Relaxed);
+                shared_state
+                    .handles
+                    .store(handles, atomic::Ordering::Relaxed);
 
                 {
                     let mut slowest_tick = shared_state.slowest_tick.lock().unwrap();
@@ -273,7 +284,6 @@ struct AppState {
 
 struct TabViewer<'a> {
     state: &'a mut AppState,
-    new_runtime: Option<Runtime<DebuggerTimer>>,
 }
 
 impl egui_dock::TabViewer for TabViewer<'_> {
@@ -335,36 +345,6 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                         ui.checkbox(&mut self.state.optimize, "");
                         ui.end_row();
 
-                        ui.label("Tick Rate").on_hover_text("The duration between individual calls to the update function.");
-                        ui.label(fmt_duration(
-                            time::Duration::try_from(
-                                *self.state.shared_state.tick_rate.lock().unwrap(),
-                            )
-                            .unwrap_or_default(),
-                        ));
-                        ui.end_row();
-
-                        ui.label("Avg. Tick Time").on_hover_text("The average duration of the execution of the update function.");
-                        ui.label(fmt_duration(time::Duration::seconds_f64(
-                            self.state.shared_state.avg_tick_secs.load(atomic::Ordering::Relaxed),
-                        )));
-                        ui.end_row();
-
-                        ui.label("Slowest Tick").on_hover_text("The slowest duration of the execution of the update function.");
-                        ui.horizontal(|ui| {
-                            ui.label(fmt_duration(
-                                time::Duration::try_from(
-                                    *self.state.shared_state.slowest_tick.lock().unwrap(),
-                                )
-                                .unwrap_or_default(),
-                            ));
-                            if ui.button("Reset").clicked() {
-                                *self.state.shared_state.slowest_tick.lock().unwrap() =
-                                    std::time::Duration::ZERO;
-                            }
-                        });
-                        ui.end_row();
-
                         {
                             let mut state = self.state.timer.0.write().unwrap();
 
@@ -393,6 +373,57 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                             ui.label(state.split_index.to_string());
                             ui.end_row();
                         }
+                    });
+            }
+            Tab::Statistics => {
+                Grid::new("stats_grid")
+                    .num_columns(2)
+                    .spacing([40.0, 4.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.label("Tick Rate").on_hover_text(
+                            "The duration between individual calls to the update function.",
+                        );
+                        ui.label(fmt_duration(
+                            time::Duration::try_from(
+                                *self.state.shared_state.tick_rate.lock().unwrap(),
+                            )
+                            .unwrap_or_default(),
+                        ));
+                        ui.end_row();
+
+                        ui.label("Avg. Tick Time").on_hover_text(
+                            "The average duration of the execution of the update function.",
+                        );
+                        ui.label(fmt_duration(time::Duration::seconds_f64(
+                            self.state
+                                .shared_state
+                                .avg_tick_secs
+                                .load(atomic::Ordering::Relaxed),
+                        )));
+                        ui.end_row();
+
+                        ui.label("Slowest Tick").on_hover_text(
+                            "The slowest duration of the execution of the update function.",
+                        );
+                        ui.horizontal(|ui| {
+                            ui.label(fmt_duration(
+                                time::Duration::try_from(
+                                    *self.state.shared_state.slowest_tick.lock().unwrap(),
+                                )
+                                .unwrap_or_default(),
+                            ));
+                            if ui.button("Reset").clicked() {
+                                *self.state.shared_state.slowest_tick.lock().unwrap() =
+                                    std::time::Duration::ZERO;
+                            }
+                        });
+                        ui.end_row();
+
+                        let handles = self.state.shared_state.handles.load(atomic::Ordering::Relaxed);
+                        ui.label("Handles").on_hover_text("The current amount of handles (processes, settings maps, setting values) used by the auto splitter.");
+                        ui.label(handles.to_string());
+                        ui.end_row();
 
                         let memory_usage = self.state.shared_state.memory_usage.load(atomic::Ordering::Relaxed);
                         ui.label("Memory").on_hover_text("The current amount of memory used by the auto splitter (stack, heap, global variables). This excludes the size of the code itself.");
@@ -486,74 +517,91 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                         }
                     });
             }
-            Tab::Settings => {
-                Grid::new("settings_grid")
-                    .num_columns(3)
+            Tab::SettingsGUI => {
+                if let Some(runtime) = &*self.state.shared_state.runtime.read().unwrap() {
+                    let mut spacing = 0.0;
+                    for setting in runtime.user_settings().iter() {
+                        ui.horizontal(|ui| match setting.kind {
+                            UserSettingKind::Bool { default_value } => {
+                                ui.add_space(spacing);
+                                let mut value = match runtime.settings_map().get(&setting.key) {
+                                    Some(SettingValue::Bool(v)) => *v,
+                                    _ => default_value,
+                                };
+                                if ui.checkbox(&mut value, "").changed() {
+                                    loop {
+                                        let old = runtime.settings_map();
+                                        let mut new = old.clone();
+                                        new.insert(setting.key.clone(), SettingValue::Bool(value));
+                                        if runtime.set_settings_map_if_unchanged(&old, new) {
+                                            break;
+                                        }
+                                    }
+                                }
+                                let label = ui.label(&*setting.description);
+                                if let Some(tooltip) = &setting.tooltip {
+                                    label.on_hover_text(&**tooltip);
+                                }
+                            }
+                            UserSettingKind::Title { heading_level } => {
+                                spacing = 20.0 * heading_level as f32;
+                                ui.add_space(spacing);
+                                let label = ui.label(
+                                    RichText::new(&*setting.description)
+                                        .heading()
+                                        .size(25.0 * 0.9f32.powi(heading_level as i32)),
+                                );
+                                if let Some(tooltip) = &setting.tooltip {
+                                    label.on_hover_text(&**tooltip);
+                                }
+                                spacing += 20.0;
+                            }
+                        });
+                        ui.end_row();
+                    }
+                }
+            }
+            Tab::SettingsMap => {
+                Grid::new("settings_map_grid")
+                    .num_columns(2)
                     .spacing([40.0, 4.0])
                     .striped(true)
                     .show(ui, |ui| {
                         ui.label(RichText::new("Key").strong().underline());
-                        ui.label(RichText::new("Setting").strong().underline());
+                        ui.label(RichText::new("Value").strong().underline());
                         ui.end_row();
-                        if let Some(runtime) = &*self.state.shared_state.runtime.read().unwrap() {
-                            for setting in runtime.user_settings().iter() {
-                                ui.label(&*setting.key);
-                                match setting.kind {
-                                    UserSettingKind::Bool { default_value } => {
-                                        let label = ui.label(&*setting.description);
-                                        if let Some(tooltip) = &setting.tooltip {
-                                            label.on_hover_text(&**tooltip);
-                                        }
-                                        let mut value =
-                                            match runtime.settings_store().get(&setting.key) {
-                                                Some(SettingValue::Bool(v)) => *v,
-                                                _ => default_value,
-                                            };
-                                        if ui.checkbox(&mut value, "").changed() {
-                                            let mut settings = runtime.settings_store().clone();
-                                            settings.set(
-                                                setting.key.clone(),
-                                                SettingValue::Bool(value),
-                                            );
 
-                                            let config =
-                                                self.state.build_runtime_config(Some(settings));
+                        let settings_map = self
+                            .state
+                            .shared_state
+                            .runtime
+                            .read()
+                            .unwrap()
+                            .as_ref()
+                            .map(|r| r.settings_map().clone());
 
-                                            self.new_runtime = match Runtime::new(
-                                                &self.state.module,
-                                                self.state.timer.clone(),
-                                                config,
-                                            ) {
-                                                Ok(r) => Some(r),
-                                                Err(e) => {
-                                                    self.state.timer.0.write().unwrap().logs.push(
-                                                        format!(
-                                                            "Failed loading the WASM file: {e:?}"
-                                                        )
-                                                        .into(),
-                                                    );
-                                                    None
-                                                }
-                                            };
-                                            break;
-                                        }
+                        if let Some(settings_map) = settings_map {
+                            for (key, value) in settings_map.iter() {
+                                ui.label(key);
+                                match value {
+                                    SettingValue::Bool(v) => {
+                                        ui.label(if *v { "true" } else { "false " });
                                     }
-                                    UserSettingKind::Title { heading_level } => {
-                                        let label = ui.label(
-                                            RichText::new(&*setting.description)
-                                                .heading()
-                                                .underline()
-                                                .size(25.0 * 0.9f32.powi(heading_level as i32)),
-                                        );
-                                        if let Some(tooltip) = &setting.tooltip {
-                                            label.on_hover_text(&**tooltip);
-                                        }
+                                    _ => {
+                                        ui.label("<Unsupported>");
                                     }
                                 }
                                 ui.end_row();
                             }
                         }
                     });
+
+                ui.add_space(10.0);
+                if ui.button("Clear").clicked() {
+                    if let Some(runtime) = &*self.state.shared_state.runtime.read().unwrap() {
+                        runtime.set_settings_map(SettingsMap::new());
+                    }
+                }
             }
             Tab::Processes => {
                 Grid::new("processes_grid")
@@ -633,9 +681,11 @@ impl egui_dock::TabViewer for TabViewer<'_> {
     fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
         match tab {
             Tab::Main => "Main",
+            Tab::Statistics => "Statistics",
             Tab::Logs => "Logs",
             Tab::Variables => "Variables",
-            Tab::Settings => "Settings",
+            Tab::SettingsGUI => "Settings GUI",
+            Tab::SettingsMap => "Settings Map",
             Tab::Processes => "Processes",
             Tab::Performance => "Performance",
         }
@@ -678,18 +728,12 @@ impl App for Debugger {
 
         let mut tab_viewer = TabViewer {
             state: &mut self.state,
-            new_runtime: None,
         };
 
         DockArea::new(&mut self.dock_state)
             .show_window_close_buttons(false)
             .style(Style::from_egui(ctx.style().as_ref()))
             .show(ctx, &mut tab_viewer);
-
-        if tab_viewer.new_runtime.is_some() {
-            let runtime = tab_viewer.new_runtime;
-            *self.state.shared_state.prepare_to_replace_runtime() = runtime;
-        }
     }
 }
 
@@ -700,7 +744,19 @@ impl AppState {
         self.module_modified_time = fs::metadata(&file).ok().and_then(|m| m.modified().ok());
         self.path = Some(file);
         let mut succeeded = true;
-        let config = self.build_runtime_config(None);
+
+        let settings_map = if !clear {
+            self.shared_state
+                .runtime
+                .read()
+                .unwrap()
+                .as_ref()
+                .map(|r| r.settings_map())
+        } else {
+            None
+        };
+
+        let config = self.build_runtime_config(settings_map);
 
         *self.shared_state.prepare_to_replace_runtime() =
             match Runtime::new(&self.module, self.timer.clone(), config) {
@@ -739,9 +795,9 @@ impl AppState {
         }
     }
 
-    fn build_runtime_config(&self, settings_store: Option<SettingsStore>) -> Config<'_> {
+    fn build_runtime_config(&self, settings_map: Option<SettingsMap>) -> Config<'_> {
         let mut config = Config::default();
-        config.settings_store = settings_store;
+        config.settings_map = settings_map;
         config.interpreter_script_path = self.script_path.as_deref();
         config.debug_info = true;
         config.optimize = self.optimize;

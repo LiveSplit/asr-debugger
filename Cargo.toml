@@ -19,3 +19,14 @@ livesplit-auto-splitting = { git = "https://github.com/LiveSplit/livesplit-core"
 
 [patch.crates-io]
 read-process-memory = { git = "https://github.com/CryZe/read-process-memory", branch = "asr-debugger" }
+fxprof-processed-profile = { git = "https://github.com/mstange/samply/" }
+
+[profile.max-opt]
+inherits = "release"
+lto = true
+strip = true
+panic = "abort"
+codegen-units = 1
+
+[profile.max-opt.build-override]
+opt-level = 0
