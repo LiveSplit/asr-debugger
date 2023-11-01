@@ -89,10 +89,10 @@ jobs:
 
     steps:
       - name: Checkout Commit
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: hecrj/setup-rust-action@v1
+        uses: hecrj/setup-rust-action@v2
         with:
           rust-version: ${{ matrix.toolchain || 'stable' }}
 
@@ -152,17 +152,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Commit
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: hecrj/setup-rust-action@v1
+        uses: hecrj/setup-rust-action@v2
         with:
           components: clippy
-
-      - name: Cache
-        uses: Swatinem/rust-cache@ce325b60658c1b38465c06cc965b79baf32c1e72
-        with:
-          key: ${{ matrix.target }}
 
       - name: Run Clippy
         run: cargo clippy --all-features
@@ -171,10 +166,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Commit
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: hecrj/setup-rust-action@v1
+        uses: hecrj/setup-rust-action@v2
         with:
           components: rustfmt
 
