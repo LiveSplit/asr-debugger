@@ -562,44 +562,23 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                 }
             }
             Tab::SettingsMap => {
-                Grid::new("settings_map_grid")
-                    .num_columns(2)
-                    .spacing([40.0, 4.0])
-                    .striped(true)
-                    .show(ui, |ui| {
-                        ui.label(RichText::new("Key").strong().underline());
-                        ui.label(RichText::new("Value").strong().underline());
-                        ui.end_row();
+                let settings_map = self
+                    .state
+                    .shared_state
+                    .runtime
+                    .read()
+                    .unwrap()
+                    .as_ref()
+                    .map(|r| r.settings_map().clone());
 
-                        let settings_map = self
-                            .state
-                            .shared_state
-                            .runtime
-                            .read()
-                            .unwrap()
-                            .as_ref()
-                            .map(|r| r.settings_map().clone());
+                if let Some(settings_map) = &settings_map {
+                    render_settings_map(ui, settings_map, 0);
 
-                        if let Some(settings_map) = settings_map {
-                            for (key, value) in settings_map.iter() {
-                                ui.label(key);
-                                match value {
-                                    SettingValue::Bool(v) => {
-                                        ui.label(if *v { "true" } else { "false " });
-                                    }
-                                    _ => {
-                                        ui.label("<Unsupported>");
-                                    }
-                                }
-                                ui.end_row();
-                            }
+                    ui.add_space(10.0);
+                    if ui.button("Clear").clicked() {
+                        if let Some(runtime) = &*self.state.shared_state.runtime.read().unwrap() {
+                            runtime.set_settings_map(SettingsMap::new());
                         }
-                    });
-
-                ui.add_space(10.0);
-                if ui.button("Clear").clicked() {
-                    if let Some(runtime) = &*self.state.shared_state.runtime.read().unwrap() {
-                        runtime.set_settings_map(SettingsMap::new());
                     }
                 }
             }
@@ -691,6 +670,37 @@ impl egui_dock::TabViewer for TabViewer<'_> {
         }
         .into()
     }
+}
+
+fn render_settings_map(ui: &mut egui::Ui, settings_map: &SettingsMap, level: usize) {
+    Grid::new(format!("settings_map_grid_{level}"))
+        .num_columns(2)
+        .spacing([40.0, 4.0])
+        .striped(true)
+        .show(ui, |ui| {
+            ui.label(RichText::new("Key").strong().underline());
+            ui.label(RichText::new("Value").strong().underline());
+            ui.end_row();
+
+            for (key, value) in settings_map.iter() {
+                ui.label(key);
+                match value {
+                    SettingValue::Bool(v) => {
+                        ui.label(if *v { "true" } else { "false " });
+                    }
+                    SettingValue::Map(v) => {
+                        render_settings_map(ui, v, level + 1);
+                    }
+                    SettingValue::String(v) => {
+                        ui.label(&**v);
+                    }
+                    _ => {
+                        ui.label("<Unsupported>");
+                    }
+                }
+                ui.end_row();
+            }
+        });
 }
 
 impl App for Debugger {
