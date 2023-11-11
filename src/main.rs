@@ -27,9 +27,7 @@ use egui_file::FileDialog;
 use egui_plot::{Bar, BarChart, Legend, Plot, VLine};
 use hdrhistogram::Histogram;
 use indexmap::IndexMap;
-use livesplit_auto_splitting::{
-    time, Config, Runtime, SettingValue, SettingsMap, Timer, TimerState, UserSettingKind,
-};
+use livesplit_auto_splitting::{settings, time, Config, Runtime, Timer, TimerState};
 
 mod clear_vec;
 
@@ -520,19 +518,22 @@ impl egui_dock::TabViewer for TabViewer<'_> {
             Tab::SettingsGUI => {
                 if let Some(runtime) = &*self.state.shared_state.runtime.read().unwrap() {
                     let mut spacing = 0.0;
-                    for setting in runtime.user_settings().iter() {
+                    for setting in runtime.settings_widgets().iter() {
                         ui.horizontal(|ui| match setting.kind {
-                            UserSettingKind::Bool { default_value } => {
+                            settings::WidgetKind::Bool { default_value } => {
                                 ui.add_space(spacing);
                                 let mut value = match runtime.settings_map().get(&setting.key) {
-                                    Some(SettingValue::Bool(v)) => *v,
+                                    Some(settings::Value::Bool(v)) => *v,
                                     _ => default_value,
                                 };
                                 if ui.checkbox(&mut value, "").changed() {
                                     loop {
                                         let old = runtime.settings_map();
                                         let mut new = old.clone();
-                                        new.insert(setting.key.clone(), SettingValue::Bool(value));
+                                        new.insert(
+                                            setting.key.clone(),
+                                            settings::Value::Bool(value),
+                                        );
                                         if runtime.set_settings_map_if_unchanged(&old, new) {
                                             break;
                                         }
@@ -543,7 +544,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                                     label.on_hover_text(&**tooltip);
                                 }
                             }
-                            UserSettingKind::Title { heading_level } => {
+                            settings::WidgetKind::Title { heading_level } => {
                                 spacing = 20.0 * heading_level as f32;
                                 ui.add_space(spacing);
                                 let label = ui.label(
@@ -577,7 +578,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                     ui.add_space(10.0);
                     if ui.button("Clear").clicked() {
                         if let Some(runtime) = &*self.state.shared_state.runtime.read().unwrap() {
-                            runtime.set_settings_map(SettingsMap::new());
+                            runtime.set_settings_map(settings::Map::new());
                         }
                     }
                 }
@@ -672,7 +673,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
     }
 }
 
-fn render_settings_map(ui: &mut egui::Ui, settings_map: &SettingsMap, level: usize) {
+fn render_settings_map(ui: &mut egui::Ui, settings_map: &settings::Map, level: usize) {
     Grid::new(format!("settings_map_grid_{level}"))
         .num_columns(2)
         .spacing([40.0, 4.0])
@@ -684,23 +685,45 @@ fn render_settings_map(ui: &mut egui::Ui, settings_map: &SettingsMap, level: usi
 
             for (key, value) in settings_map.iter() {
                 ui.label(key);
-                match value {
-                    SettingValue::Bool(v) => {
-                        ui.label(if *v { "true" } else { "false " });
-                    }
-                    SettingValue::Map(v) => {
-                        render_settings_map(ui, v, level + 1);
-                    }
-                    SettingValue::String(v) => {
-                        ui.label(&**v);
-                    }
-                    _ => {
-                        ui.label("<Unsupported>");
-                    }
-                }
+                render_value(value, ui, level);
                 ui.end_row();
             }
         });
+}
+
+fn render_settings_list(ui: &mut egui::Ui, settings_list: &settings::List, level: usize) {
+    Grid::new(format!("settings_list_grid_{level}"))
+        .num_columns(1)
+        .spacing([40.0, 4.0])
+        .striped(true)
+        .show(ui, |ui| {
+            for value in settings_list.iter() {
+                render_value(value, ui, level);
+                ui.end_row();
+            }
+        });
+}
+
+fn render_value(value: &settings::Value, ui: &mut egui::Ui, level: usize) {
+    match value {
+        settings::Value::Map(v) => render_settings_map(ui, v, level + 1),
+        settings::Value::List(v) => render_settings_list(ui, v, level + 1),
+        settings::Value::Bool(v) => {
+            ui.label(if *v { "true" } else { "false " });
+        }
+        settings::Value::I64(v) => {
+            ui.label(v.to_string());
+        }
+        settings::Value::F64(v) => {
+            ui.label(v.to_string());
+        }
+        settings::Value::String(v) => {
+            ui.label(&**v);
+        }
+        _ => {
+            ui.label("<Unsupported>");
+        }
+    }
 }
 
 impl App for Debugger {
@@ -805,7 +828,7 @@ impl AppState {
         }
     }
 
-    fn build_runtime_config(&self, settings_map: Option<SettingsMap>) -> Config<'_> {
+    fn build_runtime_config(&self, settings_map: Option<settings::Map>) -> Config<'_> {
         let mut config = Config::default();
         config.settings_map = settings_map;
         config.interpreter_script_path = self.script_path.as_deref();
