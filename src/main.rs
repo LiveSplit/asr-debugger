@@ -427,8 +427,8 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                         ui.label("Memory").on_hover_text("The current amount of memory used by the auto splitter (stack, heap, global variables). This excludes the size of the code itself.");
                         ui.horizontal(|ui| {
                             ui.label(
-                                byte_unit::Byte::from_bytes(memory_usage as _)
-                                    .get_appropriate_unit(true)
+                                byte_unit::Byte::from_u64(memory_usage as _)
+                                    .get_appropriate_unit(byte_unit::UnitType::Binary)
                                     .to_string(),
                             );
                             if ui.button("Dump").clicked() {
