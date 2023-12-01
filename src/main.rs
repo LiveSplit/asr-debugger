@@ -17,7 +17,7 @@ use atomic::Atomic;
 use clap::Parser;
 use clear_vec::{Clear, ClearVec};
 use eframe::{
-    egui::{self, Grid, RichText, TextStyle, Visuals},
+    egui::{self, ComboBox, Grid, RichText, TextStyle, Visuals},
     emath::Align,
     epaint::{FontFamily, FontId},
     App, Frame,
@@ -556,6 +556,50 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                                     label.on_hover_text(&**tooltip);
                                 }
                                 spacing += 20.0;
+                            }
+                            settings::WidgetKind::Choice {
+                                ref default_option_key,
+                                ref options,
+                            } => {
+                                ui.add_space(spacing);
+
+                                let label = ui.label(&*setting.description);
+                                if let Some(tooltip) = &setting.tooltip {
+                                    label.on_hover_text(&**tooltip);
+                                }
+
+                                let combo_box = ComboBox::new(&setting.key, "");
+
+                                let settings_map = runtime.settings_map();
+
+                                let current_key = match settings_map.get(&setting.key) {
+                                    Some(settings::Value::String(option_key)) => option_key,
+                                    _ => &**default_option_key,
+                                };
+
+                                let mut selected = options
+                                    .iter()
+                                    .position(|option| &*option.key == current_key)
+                                    .unwrap_or_default();
+
+                                if combo_box
+                                    .show_index(ui, &mut selected, options.len(), |i| {
+                                        &*options[i].description
+                                    })
+                                    .changed()
+                                {
+                                    loop {
+                                        let old = runtime.settings_map();
+                                        let mut new = old.clone();
+                                        new.insert(
+                                            setting.key.clone(),
+                                            settings::Value::String(options[selected].key.clone()),
+                                        );
+                                        if runtime.set_settings_map_if_unchanged(&old, new) {
+                                            break;
+                                        }
+                                    }
+                                }
                             }
                         });
                         ui.end_row();
