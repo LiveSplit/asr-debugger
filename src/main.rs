@@ -1169,3 +1169,65 @@ fn contains_all_in_order(haystack: &str, needles: &[String]) -> bool {
     }
     true
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_contains_all_in_order() {
+        assert!(contains_all_in_order("bar.exe", &[".exe".to_string()]));
+        assert!(contains_all_in_order(
+            "bar.exe",
+            &["".to_string(), ".exe".to_string()]
+        ));
+        assert!(contains_all_in_order(
+            "bar.txt",
+            &["".to_string(), ".txt".to_string()]
+        ));
+        assert!(!contains_all_in_order(
+            "bar.txt",
+            &["".to_string(), ".exe".to_string()]
+        ));
+        assert!(!contains_all_in_order(
+            "bar.exe",
+            &["".to_string(), ".txt".to_string()]
+        ));
+        assert!(contains_all_in_order(
+            "quick brown fox",
+            &["ick".to_string(), "row".to_string(), "ox".to_string()]
+        ));
+        assert!(!contains_all_in_order(
+            "quick brown fox",
+            &["row".to_string(), "ox".to_string(), "ick".to_string()]
+        ));
+    }
+
+    #[test]
+    fn single_pattern_filter() {
+        let filter_exe = parse_filter("*.exe");
+        let filter_txt = parse_filter("*.txt");
+        assert!(filter_exe(Path::new(r"/foo/bar.exe")));
+        assert!(filter_txt(Path::new(r"/mnt/foo/bar.txt")));
+        assert!(filter_exe(Path::new(r"/mnt/c/foo/bar.exe")));
+        assert!(filter_txt(Path::new(r"C:\foo\bar.txt")));
+        assert!(!filter_exe(Path::new(r"/foo/bar.txt")));
+        assert!(!filter_txt(Path::new(r"/mnt/foo/bar.exe")));
+        let filter_bar_exe = parse_filter("*bar*.exe");
+        assert!(filter_bar_exe(Path::new(r"/foo/bar.exe")));
+        assert!(!filter_bar_exe(Path::new(r"/foo/bar/baz.exe")));
+        assert!(!filter_bar_exe(Path::new(r"/foo/baz.exe.bar.txt")));
+    }
+
+    #[test]
+    fn multi_pattern_filter() {
+        let filter_txt_md = parse_filter("*.txt;*md");
+        assert!(filter_txt_md(Path::new(r"/foo/bar.txt")));
+        assert!(filter_txt_md(Path::new(r"/mnt/foo/bar.md")));
+        assert!(filter_txt_md(Path::new(r"/mnt/c/foo/bar.txt")));
+        assert!(filter_txt_md(Path::new(r"C:\foo\bar.md")));
+        assert!(!filter_txt_md(Path::new(r"/foo/bar.exe")));
+        assert!(!filter_txt_md(Path::new(r"/foo/bar.txt/baz.exe")));
+        assert!(!filter_txt_md(Path::new(r"/foo/bar.md/baz.exe")));
+    }
+}
