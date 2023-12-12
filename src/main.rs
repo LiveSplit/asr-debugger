@@ -1155,6 +1155,17 @@ fn parse_filter(filter: &str) -> egui_file::Filter {
         let name = p.file_name().unwrap_or_default().to_string_lossy();
         variants
             .iter()
-            .any(|pieces| pieces.iter().all(|piece| name.contains(piece)))
+            .any(|pieces| contains_all_in_order(&name, &pieces))
     })
+}
+
+fn contains_all_in_order(haystack: &str, needles: &[String]) -> bool {
+    let mut hay: &str = haystack;
+    for piece in needles {
+        let Some((_, rst)) = hay.split_once(piece) else {
+            return false;
+        };
+        hay = rst;
+    }
+    true
 }
