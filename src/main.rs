@@ -622,15 +622,9 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                                         Some(settings::Value::String(path)) => wasi_to_path(path),
                                         _ => None,
                                     };
-                                let filter_pieces: Vec<String> =
-                                    filter.split('*').map(String::from).collect();
                                 if ui.button(&*setting.description).clicked() {
-                                    let mut dialog = FileDialog::open_file(current_path).filter(
-                                        Box::new(move |p: &Path| {
-                                            let s = p.to_string_lossy();
-                                            filter_pieces.iter().all(|f| s.contains(f))
-                                        }),
-                                    );
+                                    let mut dialog = FileDialog::open_file(current_path)
+                                        .filter(parse_filter(filter));
                                     dialog.open();
                                     self.state.open_file_dialog = Some((
                                         dialog,
@@ -1148,4 +1142,19 @@ impl DebuggerTimerState {
     fn clear(&mut self) {
         self.reset();
     }
+}
+
+// --------------------------------------------------------
+
+fn parse_filter(filter: &str) -> egui_file::Filter {
+    let variants: Vec<Vec<String>> = filter
+        .split(';')
+        .map(|variant| variant.split('*').map(String::from).collect())
+        .collect();
+    Box::new(move |p: &Path| {
+        let name = p.file_name().unwrap_or_default().to_string_lossy();
+        variants
+            .iter()
+            .any(|pieces| pieces.iter().all(|piece| name.contains(piece)))
+    })
 }
