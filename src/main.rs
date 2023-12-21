@@ -31,11 +31,12 @@ use egui_plot::{Bar, BarChart, Legend, Plot, VLine};
 use hdrhistogram::Histogram;
 use indexmap::IndexMap;
 use livesplit_auto_splitting::{
-    settings, time, AutoSplitter, CompiledAutoSplitter, Config, ExecutionGuard, Runtime, Timer,
-    TimerState,
+    settings, time, wasi_path, AutoSplitter, CompiledAutoSplitter, Config, ExecutionGuard, Runtime,
+    Timer, TimerState,
 };
 
 mod clear_vec;
+mod file_filter;
 
 enum Tab {
     Main,
@@ -278,11 +279,17 @@ struct AppState {
     module_modified_time: Option<SystemTime>,
     script_modified_time: Option<SystemTime>,
     optimize: bool,
-    open_file_dialog: Option<(FileDialog, bool)>,
+    open_file_dialog: Option<(FileDialog, FileDialogInfo)>,
     module: Option<CompiledAutoSplitter>,
     shared_state: Arc<SharedState>,
     timer: DebuggerTimer,
     runtime: livesplit_auto_splitting::Runtime,
+}
+
+enum FileDialogInfo {
+    Wasm,
+    Script,
+    SettingsWidget(Arc<str>),
 }
 
 struct TabViewer<'a> {
@@ -309,7 +316,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                             if ui.button("Open").clicked() {
                                 let mut dialog = FileDialog::open_file(self.state.path.clone());
                                 dialog.open();
-                                self.state.open_file_dialog = Some((dialog, true));
+                                self.state.open_file_dialog = Some((dialog, FileDialogInfo::Wasm));
                             }
                             if let Some(auto_splitter) = &*self.state.shared_state.auto_splitter.load() {
                                     if ui.button("Restart").clicked() {
@@ -330,7 +337,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                                 let mut dialog =
                                     FileDialog::open_file(self.state.script_path.clone());
                                 dialog.open();
-                                self.state.open_file_dialog = Some((dialog, false));
+                                self.state.open_file_dialog = Some((dialog, FileDialogInfo::Script));
                             }
                             if self.state.shared_state.auto_splitter.load().is_some() {
                                 if let Some(script_path) = &self.state.script_path {
@@ -607,6 +614,32 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                                     }
                                 }
                             }
+                            settings::WidgetKind::FileSelect { ref filters } => {
+                                ui.add_space(spacing);
+                                let settings_map = runtime.settings_map();
+                                let current_path: Option<PathBuf> =
+                                    match settings_map.get(&setting.key) {
+                                        Some(settings::Value::String(path)) => {
+                                            wasi_path::to_native(path)
+                                        }
+                                        _ => None,
+                                    };
+
+                                let mut button = ui.button(&*setting.description);
+                                if let Some(tooltip) = &setting.tooltip {
+                                    button = button.on_hover_text(&**tooltip);
+                                }
+
+                                if button.clicked() {
+                                    let mut dialog = FileDialog::open_file(current_path)
+                                        .show_files_filter(file_filter::build(filters.clone()));
+                                    dialog.open();
+                                    self.state.open_file_dialog = Some((
+                                        dialog,
+                                        FileDialogInfo::SettingsWidget(setting.key.clone()),
+                                    ));
+                                }
+                            }
                         });
                         ui.end_row();
                     }
@@ -800,13 +833,31 @@ impl App for Debugger {
             }
         }
 
-        if let Some((dialog, is_wasm)) = &mut self.state.open_file_dialog {
+        if let Some((dialog, info)) = &mut self.state.open_file_dialog {
             if dialog.show(ctx).selected() {
                 if let Some(file) = dialog.path().map(ToOwned::to_owned) {
-                    if *is_wasm {
-                        self.state.load(Load::File(file));
-                    } else {
-                        self.state.set_script_path(file);
+                    match info {
+                        FileDialogInfo::Wasm => self.state.load(Load::File(file)),
+                        FileDialogInfo::Script => self.state.set_script_path(file),
+                        FileDialogInfo::SettingsWidget(key) => {
+                            if let Some(s) = wasi_path::from_native(&file) {
+                                if let Some(runtime) =
+                                    &*self.state.shared_state.auto_splitter.load()
+                                {
+                                    loop {
+                                        let old = runtime.settings_map();
+                                        let mut new = old.clone();
+                                        new.insert(
+                                            key.clone(),
+                                            settings::Value::String(s.as_ref().into()),
+                                        );
+                                        if runtime.set_settings_map_if_unchanged(&old, new) {
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
