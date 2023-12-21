@@ -6,9 +6,10 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-atomic = "0.6.0"
 anyhow = "1.0.75"
 arc-swap = "1.6.0"
+atomic = "0.6.0"
+bstr = "1.8.0"
 byte-unit = "5.0.3"
 clap = { version = "4.4.6", default-features = false, features = ["derive", "std"] }
 eframe = "0.24.1"
@@ -18,6 +19,7 @@ egui_plot = "0.24.1"
 hdrhistogram = { version = "7.5.2", default-features = false }
 indexmap = "2.0.0"
 livesplit-auto-splitting = { git = "https://github.com/LiveSplit/livesplit-core" }
+mime_guess = "2.0.4"
 
 [profile.max-opt]
 inherits = "release"

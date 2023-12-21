@@ -5,7 +5,7 @@ use std::{
     fmt,
     fs::{self, File},
     io::Write,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         atomic::{AtomicU64, AtomicUsize},
         Arc, Mutex, RwLock,
@@ -31,12 +31,12 @@ use egui_plot::{Bar, BarChart, Legend, Plot, VLine};
 use hdrhistogram::Histogram;
 use indexmap::IndexMap;
 use livesplit_auto_splitting::{
-    settings, time,
-    wasi_path::{path_to_wasi, wasi_to_path},
-    AutoSplitter, CompiledAutoSplitter, Config, ExecutionGuard, Runtime, Timer, TimerState,
+    settings, time, wasi_path, AutoSplitter, CompiledAutoSplitter, Config, ExecutionGuard, Runtime,
+    Timer, TimerState,
 };
 
 mod clear_vec;
+mod file_filter;
 
 enum Tab {
     Main,
@@ -287,7 +287,7 @@ struct AppState {
 }
 
 enum FileDialogInfo {
-    WASM,
+    Wasm,
     Script,
     SettingsWidget(Arc<str>),
 }
@@ -316,7 +316,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                             if ui.button("Open").clicked() {
                                 let mut dialog = FileDialog::open_file(self.state.path.clone());
                                 dialog.open();
-                                self.state.open_file_dialog = Some((dialog, FileDialogInfo::WASM));
+                                self.state.open_file_dialog = Some((dialog, FileDialogInfo::Wasm));
                             }
                             if let Some(auto_splitter) = &*self.state.shared_state.auto_splitter.load() {
                                     if ui.button("Restart").clicked() {
@@ -614,17 +614,25 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                                     }
                                 }
                             }
-                            settings::WidgetKind::FileSelection { ref filter } => {
+                            settings::WidgetKind::FileSelect { ref filters } => {
                                 ui.add_space(spacing);
                                 let settings_map = runtime.settings_map();
                                 let current_path: Option<PathBuf> =
                                     match settings_map.get(&setting.key) {
-                                        Some(settings::Value::String(path)) => wasi_to_path(path),
+                                        Some(settings::Value::String(path)) => {
+                                            wasi_path::to_native(path)
+                                        }
                                         _ => None,
                                     };
-                                if ui.button(&*setting.description).clicked() {
+
+                                let mut button = ui.button(&*setting.description);
+                                if let Some(tooltip) = &setting.tooltip {
+                                    button = button.on_hover_text(&**tooltip);
+                                }
+
+                                if button.clicked() {
                                     let mut dialog = FileDialog::open_file(current_path)
-                                        .filter(parse_filter(filter));
+                                        .show_files_filter(file_filter::build(filters.clone()));
                                     dialog.open();
                                     self.state.open_file_dialog = Some((
                                         dialog,
@@ -829,12 +837,12 @@ impl App for Debugger {
             if dialog.show(ctx).selected() {
                 if let Some(file) = dialog.path().map(ToOwned::to_owned) {
                     match info {
-                        FileDialogInfo::WASM => self.state.load(Load::File(file)),
+                        FileDialogInfo::Wasm => self.state.load(Load::File(file)),
                         FileDialogInfo::Script => self.state.set_script_path(file),
                         FileDialogInfo::SettingsWidget(key) => {
-                            if let Some(s) = path_to_wasi(&file) {
+                            if let Some(s) = wasi_path::from_native(&file) {
                                 if let Some(runtime) =
-                                    &*self.state.shared_state.runtime.read().unwrap()
+                                    &*self.state.shared_state.auto_splitter.load()
                                 {
                                     loop {
                                         let old = runtime.settings_map();
@@ -1141,93 +1149,5 @@ impl DebuggerTimerState {
 
     fn clear(&mut self) {
         self.reset();
-    }
-}
-
-// --------------------------------------------------------
-
-fn parse_filter(filter: &str) -> egui_file::Filter {
-    let variants: Vec<Vec<String>> = filter
-        .split(';')
-        .map(|variant| variant.split('*').map(String::from).collect())
-        .collect();
-    Box::new(move |p: &Path| {
-        let name = p.file_name().unwrap_or_default().to_string_lossy();
-        variants
-            .iter()
-            .any(|pieces| contains_all_in_order(&name, &pieces))
-    })
-}
-
-fn contains_all_in_order(haystack: &str, needles: &[String]) -> bool {
-    let mut hay: &str = haystack;
-    for piece in needles {
-        let Some((_, rst)) = hay.split_once(piece) else {
-            return false;
-        };
-        hay = rst;
-    }
-    true
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn test_contains_all_in_order() {
-        assert!(contains_all_in_order("bar.exe", &[".exe".to_string()]));
-        assert!(contains_all_in_order(
-            "bar.exe",
-            &["".to_string(), ".exe".to_string()]
-        ));
-        assert!(contains_all_in_order(
-            "bar.txt",
-            &["".to_string(), ".txt".to_string()]
-        ));
-        assert!(!contains_all_in_order(
-            "bar.txt",
-            &["".to_string(), ".exe".to_string()]
-        ));
-        assert!(!contains_all_in_order(
-            "bar.exe",
-            &["".to_string(), ".txt".to_string()]
-        ));
-        assert!(contains_all_in_order(
-            "quick brown fox",
-            &["ick".to_string(), "row".to_string(), "ox".to_string()]
-        ));
-        assert!(!contains_all_in_order(
-            "quick brown fox",
-            &["row".to_string(), "ox".to_string(), "ick".to_string()]
-        ));
-    }
-
-    #[test]
-    fn single_pattern_filter() {
-        let filter_exe = parse_filter("*.exe");
-        let filter_txt = parse_filter("*.txt");
-        assert!(filter_exe(Path::new(r"/foo/bar.exe")));
-        assert!(filter_txt(Path::new(r"/mnt/foo/bar.txt")));
-        assert!(filter_exe(Path::new(r"/mnt/c/foo/bar.exe")));
-        assert!(filter_txt(Path::new(r"C:\foo\bar.txt")));
-        assert!(!filter_exe(Path::new(r"/foo/bar.txt")));
-        assert!(!filter_txt(Path::new(r"/mnt/foo/bar.exe")));
-        let filter_bar_exe = parse_filter("*bar*.exe");
-        assert!(filter_bar_exe(Path::new(r"/foo/bar.exe")));
-        assert!(!filter_bar_exe(Path::new(r"/foo/bar/baz.exe")));
-        assert!(!filter_bar_exe(Path::new(r"/foo/baz.exe.bar.txt")));
-    }
-
-    #[test]
-    fn multi_pattern_filter() {
-        let filter_txt_md = parse_filter("*.txt;*md");
-        assert!(filter_txt_md(Path::new(r"/foo/bar.txt")));
-        assert!(filter_txt_md(Path::new(r"/mnt/foo/bar.md")));
-        assert!(filter_txt_md(Path::new(r"/mnt/c/foo/bar.txt")));
-        assert!(filter_txt_md(Path::new(r"C:\foo\bar.md")));
-        assert!(!filter_txt_md(Path::new(r"/foo/bar.exe")));
-        assert!(!filter_txt_md(Path::new(r"/foo/bar.txt/baz.exe")));
-        assert!(!filter_txt_md(Path::new(r"/foo/bar.md/baz.exe")));
     }
 }
