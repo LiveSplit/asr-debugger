@@ -18,7 +18,7 @@ egui_file = "0.13.0"
 egui_plot = "0.24.1"
 hdrhistogram = { version = "7.5.2", default-features = false }
 indexmap = "2.0.0"
-livesplit-auto-splitting = { git = "https://github.com/LiveSplit/livesplit-core" }
+livesplit-auto-splitting = { git = "https://github.com/LiveSplit/livesplit-core", features = ["debugger-support"] }
 mime_guess = "2.0.4"
 
 [profile.max-opt]
