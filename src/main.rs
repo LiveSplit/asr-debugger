@@ -71,11 +71,14 @@ fn main() {
     });
     let timer = DebuggerTimer::default();
 
-    thread::spawn({
-        let timer = timer.clone();
-        let shared_state = shared_state.clone();
-        move || runtime_thread(shared_state, timer.clone())
-    });
+    thread::Builder::new()
+        .name("Auto Splitter Thread".into())
+        .spawn({
+            let timer = timer.clone();
+            let shared_state = shared_state.clone();
+            move || runtime_thread(shared_state, timer.clone())
+        })
+        .unwrap();
 
     let options = eframe::NativeOptions::default();
     eframe::run_native(
