@@ -11,7 +11,7 @@ main() {
         stage=$(mktemp -d)
     fi
 
-    if [ "$OS_NAME" = "ubuntu-latest" ]; then
+    if [[ "$OS_NAME" = ubuntu-* ]]; then
         cp target/$TARGET/max-opt/asr-debugger $stage/.
     elif [ "$OS_NAME" = "macOS-latest" ]; then
         cp target/$TARGET/max-opt/asr-debugger $stage/.
