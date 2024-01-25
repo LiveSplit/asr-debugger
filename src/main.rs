@@ -584,7 +584,11 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                                     label.on_hover_text(&**tooltip);
                                 }
 
-                                let combo_box = ComboBox::new(&setting.key, "");
+                                let mut opt_desc_lens: Vec<usize> = options.iter().map(|o| o.description.len()).collect();
+                                opt_desc_lens.sort();
+                                let width = 0.55 * 1.25 * 14.0 * (opt_desc_lens[(opt_desc_lens.len() * 7) / 8] as f32);
+
+                                let combo_box = ComboBox::new(&setting.key, "").width(width);
 
                                 let settings_map = runtime.settings_map();
 
