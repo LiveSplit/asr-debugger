@@ -1,4 +1,4 @@
-# <img src="https://raw.githubusercontent.com/LiveSplit/LiveSplit/master/LiveSplit/Resources/Icon.png" alt="LiveSplit" height="42" width="45" align="top"/> asr-debugger
+# <img src="https://raw.githubusercontent.com/LiveSplit/LiveSplit/master/res/Icon.svg" alt="LiveSplit" height="42" width="45" align="top"/> asr-debugger
 
 This repository hosts the debugger for LiveSplit One's [auto splitting
 runtime](https://github.com/LiveSplit/livesplit-core/tree/master/crates/livesplit-auto-splitting).
