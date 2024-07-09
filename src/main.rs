@@ -1,10 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
 use std::{
-    collections::BTreeMap,
-    fmt,
-    fs::{self, File},
-    io::Write,
+    fmt, fs,
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, AtomicUsize},
@@ -20,9 +17,8 @@ use atomic::Atomic;
 use clap::Parser;
 use clear_vec::{Clear, ClearVec};
 use eframe::{
-    egui::{self, ComboBox, Grid, RichText, TextStyle, Visuals},
+    egui::{self, Color32, ComboBox, Grid, Label, RichText, Visuals},
     emath::Align,
-    epaint::{FontFamily, FontId},
     App, Frame,
 };
 use egui_dock::{DockArea, DockState, NodeIndex, Style};
@@ -56,6 +52,8 @@ struct Args {
     wasm_path: Option<PathBuf>,
 }
 
+const TEXT_COLOR: Color32 = Color32::from_gray(230);
+
 fn main() {
     let args = Args::parse();
 
@@ -80,46 +78,31 @@ fn main() {
         })
         .unwrap();
 
-    let options = eframe::NativeOptions::default();
+    let mut options = eframe::NativeOptions::default();
+    options.viewport.inner_size = Some((1250.0, 800.0).into());
+
     eframe::run_native(
         "Auto Splitting Runtime Debugger",
         options,
         Box::new(move |cc| {
             cc.egui_ctx.set_visuals(Visuals::dark());
             let mut style = (*cc.egui_ctx.style()).clone();
-
-            let mut text_styles = BTreeMap::new();
-            text_styles.insert(
-                TextStyle::Small,
-                FontId::new(1.25 * 10.0, FontFamily::Proportional),
-            );
-            text_styles.insert(
-                TextStyle::Body,
-                FontId::new(1.25 * 14.0, FontFamily::Proportional),
-            );
-            text_styles.insert(
-                TextStyle::Button,
-                FontId::new(1.25 * 14.0, FontFamily::Proportional),
-            );
-            text_styles.insert(
-                TextStyle::Heading,
-                FontId::new(1.25 * 20.0, FontFamily::Proportional),
-            );
-            text_styles.insert(
-                TextStyle::Monospace,
-                FontId::new(1.25 * 14.0, FontFamily::Monospace),
-            );
-            // Redefine text_styles
-            style.text_styles = text_styles;
-
-            // Mutate global style with above changes
+            style.visuals.override_text_color = Some(TEXT_COLOR);
             cc.egui_ctx.set_style(style);
+            cc.egui_ctx.set_zoom_factor(1.15);
 
-            let mut dock_state = DockState::new(vec![Tab::Main, Tab::Performance]);
+            let mut dock_state = DockState::new(vec![Tab::Main]);
             let tree = dock_state.main_surface_mut();
-            let [left, right] = tree.split_right(NodeIndex::root(), 0.65, vec![Tab::SettingsGUI]);
+            let side_percentage = 0.225;
+            let [left, mid] = tree.split_right(NodeIndex::root(), side_percentage, vec![Tab::Logs]);
+            let [mid, right] = tree.split_right(
+                mid,
+                (1.0 - 2.0 * side_percentage) / (1.0 - side_percentage),
+                vec![Tab::SettingsGUI],
+            );
+            tree.split_below(mid, 0.7, vec![Tab::Processes, Tab::Performance]);
             tree.split_below(right, 0.5, vec![Tab::Variables, Tab::SettingsMap]);
-            tree.split_below(left, 0.5, vec![Tab::Logs, Tab::Statistics, Tab::Processes]);
+            tree.split_below(left, 0.5, vec![Tab::Statistics]);
 
             let optimize = !args.debug;
 
@@ -143,7 +126,7 @@ fn main() {
                 app.state.load(Load::File(path));
             }
 
-            app
+            Ok(app)
         }),
     )
     .unwrap();
@@ -244,9 +227,10 @@ fn runtime_thread(shared_state: Arc<SharedState>, timer: DebuggerTimer) {
                     atomic::Ordering::Relaxed,
                 );
                 if let Err(e) = res {
-                    timer.0.write().unwrap().logs.push(
+                    timer.0.write().unwrap().logs.push((
                         format!("{:?}", e.context("Failed executing the auto splitter.")).into(),
-                    )
+                        LogType::Error,
+                    ))
                 };
                 auto_splitter.tick_rate()
             } else {
@@ -311,7 +295,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
             Tab::Main => {
                 Grid::new("main_grid")
                     .num_columns(2)
-                    .spacing([40.0, 4.0])
+                    .spacing([10.0, 4.0])
                     .striped(true)
                     .show(ui, |ui| {
                         ui.label("WASM File").on_hover_text("The main auto splitter file to run.");
@@ -392,7 +376,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
             Tab::Statistics => {
                 Grid::new("stats_grid")
                     .num_columns(2)
-                    .spacing([40.0, 4.0])
+                    .spacing([10.0, 4.0])
                     .striped(true)
                     .show(ui, |ui| {
                         ui.label("Tick Rate").on_hover_text(
@@ -458,7 +442,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                                                 .write()
                                                 .unwrap()
                                                 .logs
-                                                .push(format!("Failed to dump memory: {}", e).into());
+                                                .push((format!("Failed to dump memory: {}", e).into(), LogType::Error));
                                         }
                                     } else {
                                         self.state
@@ -467,7 +451,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                                                 .write()
                                                 .unwrap()
                                                 .logs
-                                                .push("Timed out waiting for auto splitter.".into());
+                                                .push(("Timed out waiting for auto splitter.".into(), LogType::Error));
                                     }
                                 }
                             }
@@ -479,12 +463,19 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                 let mut scroll_to_end = false;
                 Grid::new("log_grid")
                     .num_columns(1)
-                    .spacing([40.0, 4.0])
+                    .spacing([10.0, 4.0])
                     .striped(true)
                     .show(ui, |ui| {
                         let mut timer = self.state.timer.0.write().unwrap();
-                        for log in &timer.logs {
-                            ui.label(&**log);
+                        for (log, ty) in &timer.logs {
+                            ui.add(
+                                Label::new(RichText::new(&**log).color(match ty {
+                                    LogType::Runtime => TEXT_COLOR,
+                                    LogType::AutoSplitterMessage => Color32::LIGHT_BLUE,
+                                    LogType::Error => Color32::LIGHT_RED,
+                                }))
+                                .wrap(),
+                            );
                             ui.end_row();
                         }
                         if timer.logs.len() != timer.last_logs_len {
@@ -496,22 +487,6 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                     if ui.button("Clear").clicked() {
                         self.state.timer.0.write().unwrap().logs.clear();
                     }
-                    if ui.button("Save").clicked() {
-                        if let Err(e) = File::create("auto_splitter_logs.txt").and_then(|mut f| {
-                            for log in &self.state.timer.0.read().unwrap().logs {
-                                writeln!(f, "{log}")?;
-                            }
-                            Ok(())
-                        }) {
-                            self.state
-                                .timer
-                                .0
-                                .write()
-                                .unwrap()
-                                .logs
-                                .push(format!("Failed to save log file: {}", e).into());
-                        }
-                    }
                 });
                 if scroll_to_end {
                     ui.scroll_to_cursor(Some(Align::Max));
@@ -520,7 +495,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
             Tab::Variables => {
                 Grid::new("vars_grid")
                     .num_columns(2)
-                    .spacing([40.0, 4.0])
+                    .spacing([10.0, 4.0])
                     .striped(true)
                     .show(ui, |ui| {
                         let state = self.state.timer.0.read().unwrap();
@@ -561,17 +536,17 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                                 }
                             }
                             settings::WidgetKind::Title { heading_level } => {
-                                spacing = 20.0 * heading_level as f32;
+                                spacing = 16.0 * heading_level as f32;
                                 ui.add_space(spacing);
                                 let label = ui.label(
                                     RichText::new(&*setting.description)
                                         .heading()
-                                        .size(25.0 * 0.9f32.powi(heading_level as i32)),
+                                        .size(20.0 * 0.9f32.powi(heading_level as i32)),
                                 );
                                 if let Some(tooltip) = &setting.tooltip {
                                     label.on_hover_text(&**tooltip);
                                 }
-                                spacing += 20.0;
+                                spacing += 16.0;
                             }
                             settings::WidgetKind::Choice {
                                 ref default_option_key,
@@ -600,7 +575,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
 
                                 if combo_box
                                     .show_index(ui, &mut selected, options.len(), |i| {
-                                        &*options[i].description
+                                        options.get(i).map(|o| &*o.description).unwrap_or_default()
                                     })
                                     .changed()
                                 {
@@ -623,7 +598,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                                 let current_path: Option<PathBuf> =
                                     match settings_map.get(&setting.key) {
                                         Some(settings::Value::String(path)) => {
-                                            wasi_path::to_native(path)
+                                            wasi_path::to_native(path, true)
                                         }
                                         _ => None,
                                     };
@@ -671,7 +646,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
             Tab::Processes => {
                 Grid::new("processes_grid")
                     .num_columns(2)
-                    .spacing([40.0, 4.0])
+                    .spacing([10.0, 4.0])
                     .striped(true)
                     .show(ui, |ui| {
                         ui.label(RichText::new("PID").strong().underline());
@@ -717,17 +692,17 @@ impl egui_dock::TabViewer for TabViewer<'_> {
 
                 Plot::new("Performance Plot")
                     .legend(Legend::default())
-                    .x_axis_formatter(|x, chars, _| {
-                        let mut text = x.to_string();
-                        if chars >= text.len() + 2 {
-                            text.push_str("th");
-                        }
-                        if chars >= text.len() + 11 {
-                            text.push_str(" percentile");
-                        }
-                        text
+                    .x_axis_formatter(|x, _| {
+                        format!(
+                            "{:.0} FPS",
+                            time::Duration::nanoseconds(
+                                histogram.value_at_percentile(x.value as _) as _,
+                            )
+                            .as_seconds_f64()
+                            .recip(),
+                        )
                     })
-                    .y_axis_formatter(|y, _, _| format!("{y}%"))
+                    .y_axis_formatter(|y, _| format!("{}%", y.value))
                     .clamp_grid(true)
                     .allow_zoom(true)
                     .allow_drag(true)
@@ -761,7 +736,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
 fn render_settings_map(ui: &mut egui::Ui, settings_map: &settings::Map, path: fmt::Arguments<'_>) {
     Grid::new(format!("settings_{path}"))
         .num_columns(2)
-        .spacing([40.0, 4.0])
+        .spacing([10.0, 4.0])
         .striped(true)
         .show(ui, |ui| {
             ui.label(RichText::new("Key").strong().underline());
@@ -783,7 +758,7 @@ fn render_settings_list(
 ) {
     Grid::new(format!("settings_{path}"))
         .num_columns(1)
-        .spacing([40.0, 4.0])
+        .spacing([10.0, 4.0])
         .striped(true)
         .show(ui, |ui| {
             for (i, value) in settings_list.iter().enumerate() {
@@ -843,7 +818,9 @@ impl App for Debugger {
                         FileDialogInfo::Wasm => self.state.load(Load::File(file)),
                         FileDialogInfo::Script => self.state.set_script_path(file),
                         FileDialogInfo::SettingsWidget(key) => {
-                            if let Some(s) = wasi_path::from_native(&file) {
+                            if let Some(s) =
+                                wasi_path::from_native(&file.canonicalize().unwrap_or(file))
+                            {
                                 if let Some(runtime) =
                                     &*self.state.shared_state.auto_splitter.load()
                                 {
@@ -914,7 +891,7 @@ impl AppState {
                         .write()
                         .unwrap()
                         .logs
-                        .push(format!("{e:?}").into());
+                        .push((format!("{e:?}").into(), LogType::Error));
                     None
                 }
             };
@@ -938,7 +915,7 @@ impl AppState {
                         .write()
                         .unwrap()
                         .logs
-                        .push(format!("{e:?}").into());
+                        .push((format!("{e:?}").into(), LogType::Error));
                     None
                 }
             }
@@ -962,14 +939,15 @@ impl AppState {
         timer.variables.clear();
 
         if succeeded {
-            timer.logs.push(
+            timer.logs.push((
                 match load {
                     Load::File(_) => "Auto splitter loaded.",
                     Load::Reload => "Auto splitter reloaded.",
                     Load::Restart => "Auto splitter restarted.",
                 }
                 .into(),
-            );
+                LogType::Runtime,
+            ));
         }
     }
 
@@ -977,14 +955,15 @@ impl AppState {
         let is_reload = Some(file.as_path()) == self.script_path.as_deref();
         self.script_modified_time = fs::metadata(&file).ok().and_then(|m| m.modified().ok());
         self.script_path = Some(file);
-        self.timer.0.write().unwrap().logs.push(
+        self.timer.0.write().unwrap().logs.push((
             if is_reload {
                 "Script reloaded."
             } else {
                 "Script loaded."
             }
             .into(),
-        );
+            LogType::Runtime,
+        ));
         self.load(Load::Restart);
     }
 }
@@ -1026,6 +1005,12 @@ fn timer_state_to_str(state: TimerState) -> &'static str {
     }
 }
 
+enum LogType {
+    Runtime,
+    AutoSplitterMessage,
+    Error,
+}
+
 #[derive(Default)]
 struct DebuggerTimerState {
     timer_state: TimerState,
@@ -1033,7 +1018,7 @@ struct DebuggerTimerState {
     game_time_state: GameTimeState,
     split_index: usize,
     variables: IndexMap<Box<str>, String>,
-    logs: Vec<Box<str>>,
+    logs: Vec<(Box<str>, LogType)>,
     last_logs_len: usize,
 }
 
@@ -1067,7 +1052,7 @@ impl Timer for DebuggerTimer {
         let mut state = self.0.write().unwrap();
         if state.timer_state == TimerState::NotRunning {
             state.start();
-            state.logs.push("Timer started.".into());
+            state.logs.push(("Timer started.".into(), LogType::Runtime));
         }
     }
 
@@ -1075,7 +1060,7 @@ impl Timer for DebuggerTimer {
         let mut state = self.0.write().unwrap();
         if state.timer_state == TimerState::Running {
             state.split_index += 1;
-            state.logs.push("Splitted.".into());
+            state.logs.push(("Splitted.".into(), LogType::Runtime));
         }
     }
 
@@ -1083,7 +1068,7 @@ impl Timer for DebuggerTimer {
         let mut state = self.0.write().unwrap();
         if state.timer_state == TimerState::Running {
             state.split_index += 1;
-            state.logs.push("Split skipped.".into());
+            state.logs.push(("Split skipped.".into(), LogType::Runtime));
         }
     }
 
@@ -1094,14 +1079,14 @@ impl Timer for DebuggerTimer {
         }
         if state.timer_state == TimerState::Running {
             state.split_index = state.split_index.saturating_sub(1);
-            state.logs.push("Split undone.".into());
+            state.logs.push(("Split undone.".into(), LogType::Runtime));
         }
     }
 
     fn reset(&mut self) {
         let mut state = self.0.write().unwrap();
         state.reset();
-        state.logs.push("Run reset.".into());
+        state.logs.push(("Run reset.".into(), LogType::Runtime));
     }
 
     fn set_game_time(&mut self, time: time::Duration) {
@@ -1128,10 +1113,13 @@ impl Timer for DebuggerTimer {
     }
 
     fn log(&mut self, message: std::fmt::Arguments<'_>) {
-        self.0.write().unwrap().logs.push(match message.as_str() {
-            Some(m) => m.into(),
-            None => message.to_string().into(),
-        });
+        self.0.write().unwrap().logs.push((
+            match message.as_str() {
+                Some(m) => m.into(),
+                None => message.to_string().into(),
+            },
+            LogType::AutoSplitterMessage,
+        ));
     }
 }
 

@@ -12,10 +12,10 @@ atomic = "0.6.0"
 bstr = "1.8.0"
 byte-unit = "5.0.3"
 clap = { version = "4.4.6", default-features = false, features = ["derive", "std"] }
-eframe = "0.25.0"
-egui_dock = "0.10.0"
-egui_file = "0.14.1"
-egui_plot = "0.25.0"
+eframe = "0.28.1"
+egui_dock = "0.13.0"
+egui_file = "0.18.0"
+egui_plot = "0.28.1"
 hdrhistogram = { version = "7.5.2", default-features = false }
 indexmap = "2.0.0"
 livesplit-auto-splitting = { git = "https://github.com/LiveSplit/livesplit-core", features = ["debugger-support"] }
