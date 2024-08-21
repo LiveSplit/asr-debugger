@@ -27,9 +27,10 @@ use egui_plot::{Bar, BarChart, Legend, Plot, VLine};
 use hdrhistogram::Histogram;
 use indexmap::IndexMap;
 use livesplit_auto_splitting::{
-    settings, time, wasi_path, AutoSplitter, CompiledAutoSplitter, Config, ExecutionGuard, Runtime,
-    Timer, TimerState,
+    settings, time, wasi_path, AutoSplitter, CompiledAutoSplitter, Config, ExecutionGuard,
+    LogLevel, Runtime, Timer, TimerState,
 };
+use time::UtcOffset;
 
 mod clear_vec;
 mod file_filter;
@@ -53,8 +54,22 @@ struct Args {
 }
 
 const TEXT_COLOR: Color32 = Color32::from_gray(230);
+const TIME_COLOR: Color32 = Color32::from_gray(180);
+
+// Based on the default VSCode terminal colors.
+#[allow(unused)]
+const BLUE_COLOR: Color32 = Color32::from_rgb(0x29, 0xB8, 0xDB);
+const GREEN_COLOR: Color32 = Color32::from_rgb(0x23, 0xD1, 0x8B);
+const RED_COLOR: Color32 = Color32::from_rgb(0xF3, 0x5E, 0x5E);
+const YELLOW_COLOR: Color32 = Color32::from_rgb(0xF5, 0xF5, 0x37);
+
+const INFO_COLOR: Color32 = GREEN_COLOR;
+const WARN_COLOR: Color32 = YELLOW_COLOR;
+const ERROR_COLOR: Color32 = RED_COLOR;
 
 fn main() {
+    let time_zone = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+
     let args = Args::parse();
 
     let shared_state = Arc::new(SharedState {
@@ -67,7 +82,7 @@ fn main() {
         tick_times: Mutex::new(Histogram::new(1).unwrap()),
         processes: Mutex::new(ClearVec::new()),
     });
-    let timer = DebuggerTimer::default();
+    let timer = DebuggerTimer::new(time_zone);
 
     thread::Builder::new()
         .name("Auto Splitter Thread".into())
@@ -227,10 +242,10 @@ fn runtime_thread(shared_state: Arc<SharedState>, timer: DebuggerTimer) {
                     atomic::Ordering::Relaxed,
                 );
                 if let Err(e) = res {
-                    timer.0.write().unwrap().logs.push((
+                    timer.0.write().unwrap().log(
                         format!("{:?}", e.context("Failed executing the auto splitter.")).into(),
-                        LogType::Error,
-                    ))
+                        LogType::Runtime(LogLevel::Error),
+                    )
                 };
                 auto_splitter.tick_rate()
             } else {
@@ -441,8 +456,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                                                 .0
                                                 .write()
                                                 .unwrap()
-                                                .logs
-                                                .push((format!("Failed to dump memory: {}", e).into(), LogType::Error));
+                                                .log(format!("Failed to dump memory: {}", e).into(), LogType::Runtime(LogLevel::Error));
                                         }
                                     } else {
                                         self.state
@@ -450,8 +464,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                                                 .0
                                                 .write()
                                                 .unwrap()
-                                                .logs
-                                                .push(("Timed out waiting for auto splitter.".into(), LogType::Error));
+                                                .log("Timed out waiting for auto splitter.".into(), LogType::Runtime(LogLevel::Error));
                                     }
                                 }
                             }
@@ -462,17 +475,19 @@ impl egui_dock::TabViewer for TabViewer<'_> {
             Tab::Logs => {
                 let mut scroll_to_end = false;
                 Grid::new("log_grid")
-                    .num_columns(1)
+                    .num_columns(2)
                     .spacing([10.0, 4.0])
                     .striped(true)
                     .show(ui, |ui| {
                         let mut timer = self.state.timer.0.write().unwrap();
-                        for (log, ty) in &timer.logs {
+                        for log in &timer.logs {
+                            ui.add(Label::new(RichText::new(&*log.time).color(TIME_COLOR)));
                             ui.add(
-                                Label::new(RichText::new(&**log).color(match ty {
-                                    LogType::Runtime => TEXT_COLOR,
-                                    LogType::AutoSplitterMessage => Color32::LIGHT_BLUE,
-                                    LogType::Error => Color32::LIGHT_RED,
+                                Label::new(RichText::new(&*log.message).color(match log.ty {
+                                    LogType::AutoSplitterMessage => TEXT_COLOR,
+                                    LogType::Runtime(LogLevel::Error) => ERROR_COLOR,
+                                    LogType::Runtime(LogLevel::Warning) => WARN_COLOR,
+                                    _ => INFO_COLOR,
                                 }))
                                 .wrap(),
                             );
@@ -890,8 +905,7 @@ impl AppState {
                         .0
                         .write()
                         .unwrap()
-                        .logs
-                        .push((format!("{e:?}").into(), LogType::Error));
+                        .log(format!("{e:?}").into(), LogType::Runtime(LogLevel::Error));
                     None
                 }
             };
@@ -914,8 +928,7 @@ impl AppState {
                         .0
                         .write()
                         .unwrap()
-                        .logs
-                        .push((format!("{e:?}").into(), LogType::Error));
+                        .log(format!("{e:?}").into(), LogType::Runtime(LogLevel::Error));
                     None
                 }
             }
@@ -939,15 +952,15 @@ impl AppState {
         timer.variables.clear();
 
         if succeeded {
-            timer.logs.push((
+            timer.log(
                 match load {
                     Load::File(_) => "Auto splitter loaded.",
                     Load::Reload => "Auto splitter reloaded.",
                     Load::Restart => "Auto splitter restarted.",
                 }
                 .into(),
-                LogType::Runtime,
-            ));
+                LogType::Runtime(LogLevel::Info),
+            );
         }
     }
 
@@ -955,15 +968,15 @@ impl AppState {
         let is_reload = Some(file.as_path()) == self.script_path.as_deref();
         self.script_modified_time = fs::metadata(&file).ok().and_then(|m| m.modified().ok());
         self.script_path = Some(file);
-        self.timer.0.write().unwrap().logs.push((
+        self.timer.0.write().unwrap().log(
             if is_reload {
                 "Script reloaded."
             } else {
                 "Script loaded."
             }
             .into(),
-            LogType::Runtime,
-        ));
+            LogType::Runtime(LogLevel::Info),
+        );
         self.load(Load::Restart);
     }
 }
@@ -1006,20 +1019,52 @@ fn timer_state_to_str(state: TimerState) -> &'static str {
 }
 
 enum LogType {
-    Runtime,
+    Runtime(LogLevel),
     AutoSplitterMessage,
-    Error,
 }
 
-#[derive(Default)]
 struct DebuggerTimerState {
     timer_state: TimerState,
     game_time: time::Duration,
     game_time_state: GameTimeState,
     split_index: usize,
     variables: IndexMap<Box<str>, String>,
-    logs: Vec<(Box<str>, LogType)>,
+    time_zone: UtcOffset,
+    logs: Vec<LogMessage>,
     last_logs_len: usize,
+}
+
+impl DebuggerTimerState {
+    fn new(time_zone: UtcOffset) -> Self {
+        Self {
+            timer_state: Default::default(),
+            game_time: Default::default(),
+            game_time_state: Default::default(),
+            split_index: Default::default(),
+            variables: Default::default(),
+            time_zone,
+            logs: Default::default(),
+            last_logs_len: Default::default(),
+        }
+    }
+
+    fn log(&mut self, message: Box<str>, ty: LogType) {
+        let (h, m, s) = time::OffsetDateTime::now_utc()
+            .to_offset(self.time_zone)
+            .time()
+            .as_hms();
+        self.logs.push(LogMessage {
+            time: format!("{h:02}:{m:02}:{s:02}").into(),
+            message,
+            ty,
+        });
+    }
+}
+
+struct LogMessage {
+    time: Box<str>,
+    message: Box<str>,
+    ty: LogType,
 }
 
 #[derive(Copy, Clone, Default, PartialEq)]
@@ -1040,8 +1085,14 @@ impl GameTimeState {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct DebuggerTimer(Arc<RwLock<DebuggerTimerState>>);
+
+impl DebuggerTimer {
+    fn new(time_zone: UtcOffset) -> Self {
+        Self(Arc::new(RwLock::new(DebuggerTimerState::new(time_zone))))
+    }
+}
 
 impl Timer for DebuggerTimer {
     fn state(&self) -> TimerState {
@@ -1052,7 +1103,7 @@ impl Timer for DebuggerTimer {
         let mut state = self.0.write().unwrap();
         if state.timer_state == TimerState::NotRunning {
             state.start();
-            state.logs.push(("Timer started.".into(), LogType::Runtime));
+            state.log("Timer started.".into(), LogType::Runtime(LogLevel::Debug));
         }
     }
 
@@ -1060,7 +1111,7 @@ impl Timer for DebuggerTimer {
         let mut state = self.0.write().unwrap();
         if state.timer_state == TimerState::Running {
             state.split_index += 1;
-            state.logs.push(("Splitted.".into(), LogType::Runtime));
+            state.log("Splitted.".into(), LogType::Runtime(LogLevel::Debug));
         }
     }
 
@@ -1068,7 +1119,7 @@ impl Timer for DebuggerTimer {
         let mut state = self.0.write().unwrap();
         if state.timer_state == TimerState::Running {
             state.split_index += 1;
-            state.logs.push(("Split skipped.".into(), LogType::Runtime));
+            state.log("Split skipped.".into(), LogType::Runtime(LogLevel::Debug));
         }
     }
 
@@ -1079,14 +1130,14 @@ impl Timer for DebuggerTimer {
         }
         if state.timer_state == TimerState::Running {
             state.split_index = state.split_index.saturating_sub(1);
-            state.logs.push(("Split undone.".into(), LogType::Runtime));
+            state.log("Split undone.".into(), LogType::Runtime(LogLevel::Debug));
         }
     }
 
     fn reset(&mut self) {
         let mut state = self.0.write().unwrap();
         state.reset();
-        state.logs.push(("Run reset.".into(), LogType::Runtime));
+        state.log("Run reset.".into(), LogType::Runtime(LogLevel::Debug));
     }
 
     fn set_game_time(&mut self, time: time::Duration) {
@@ -1112,14 +1163,24 @@ impl Timer for DebuggerTimer {
         s.push_str(value);
     }
 
-    fn log(&mut self, message: std::fmt::Arguments<'_>) {
-        self.0.write().unwrap().logs.push((
+    fn log_auto_splitter(&mut self, message: std::fmt::Arguments<'_>) {
+        self.0.write().unwrap().log(
             match message.as_str() {
                 Some(m) => m.into(),
                 None => message.to_string().into(),
             },
             LogType::AutoSplitterMessage,
-        ));
+        );
+    }
+
+    fn log_runtime(&mut self, message: std::fmt::Arguments<'_>, log_level: LogLevel) {
+        self.0.write().unwrap().log(
+            match message.as_str() {
+                Some(m) => m.into(),
+                None => message.to_string().into(),
+            },
+            LogType::Runtime(log_level),
+        );
     }
 }
 
