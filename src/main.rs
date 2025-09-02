@@ -1053,6 +1053,7 @@ struct DebuggerTimerState {
     game_time: time::Duration,
     game_time_state: GameTimeState,
     split_index: usize,
+    segments_splitted: Vec<bool>,
     variables: IndexMap<Box<str>, String>,
     time_zone: UtcOffset,
     logs: Vec<LogMessage>,
@@ -1066,6 +1067,7 @@ impl DebuggerTimerState {
             game_time: Default::default(),
             game_time_state: Default::default(),
             split_index: Default::default(),
+            segments_splitted: Default::default(),
             variables: Default::default(),
             time_zone,
             logs: Default::default(),
@@ -1124,6 +1126,24 @@ impl Timer for DebuggerTimer {
         self.0.read().unwrap().timer_state
     }
 
+    fn current_split_index(&self) -> Option<usize> {
+        let t = self.0.read().ok()?;
+        if t.timer_state == TimerState::NotRunning {
+            None
+        } else {
+            Some(t.split_index)
+        }
+    }
+
+    fn segment_splitted(&self, idx: usize) -> Option<bool> {
+        let t = self.0.read().ok()?;
+        if t.timer_state == TimerState::NotRunning || t.split_index <= idx {
+            None
+        } else {
+            t.segments_splitted.get(idx).cloned()
+        }
+    }
+
     fn start(&mut self) {
         let mut state = self.0.write().unwrap();
         if state.timer_state == TimerState::NotRunning {
@@ -1136,6 +1156,7 @@ impl Timer for DebuggerTimer {
         let mut state = self.0.write().unwrap();
         if state.timer_state == TimerState::Running {
             state.split_index += 1;
+            state.segments_splitted.push(true);
             state.log("Splitted.".into(), LogType::Runtime(LogLevel::Debug));
         }
     }
@@ -1144,6 +1165,7 @@ impl Timer for DebuggerTimer {
         let mut state = self.0.write().unwrap();
         if state.timer_state == TimerState::Running {
             state.split_index += 1;
+            state.segments_splitted.push(false);
             state.log("Split skipped.".into(), LogType::Runtime(LogLevel::Debug));
         }
     }
@@ -1155,6 +1177,8 @@ impl Timer for DebuggerTimer {
         }
         if state.timer_state == TimerState::Running {
             state.split_index = state.split_index.saturating_sub(1);
+            let i = state.split_index;
+            state.segments_splitted.truncate(i);
             state.log("Split undone.".into(), LogType::Runtime(LogLevel::Debug));
         }
     }
@@ -1219,6 +1243,7 @@ impl DebuggerTimerState {
     fn reset(&mut self) {
         self.timer_state = TimerState::NotRunning;
         self.split_index = 0;
+        self.segments_splitted.clear();
         self.game_time = time::Duration::ZERO;
         self.game_time_state = GameTimeState::NotInitialized;
         self.variables.clear();
