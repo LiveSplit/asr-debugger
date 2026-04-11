@@ -39,6 +39,7 @@ mod file_filter;
 
 enum Tab {
     Main,
+    Splits,
     Statistics,
     Logs,
     Variables,
@@ -119,7 +120,7 @@ fn main() {
             );
             tree.split_below(mid, 0.7, vec![Tab::Processes, Tab::Performance]);
             tree.split_below(right, 0.5, vec![Tab::Variables, Tab::SettingsMap]);
-            tree.split_below(left, 0.5, vec![Tab::Statistics]);
+            tree.split_below(left, 0.5, vec![Tab::Statistics, Tab::Splits]);
 
             let optimize = !args.debug;
 
@@ -377,7 +378,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                             ui.end_row();
 
                             ui.label("Game Time").on_hover_text("The currently specified game time.");
-                            ui.label(fmt_duration(state.game_time));
+                            ui.label(fmt_duration(&state.game_time));
                             ui.end_row();
 
                             ui.label("Game Time State").on_hover_text("The current state of the game timer.");
@@ -385,9 +386,33 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                             ui.end_row();
 
                             ui.label("Split Index").on_hover_text("The index of the current split.");
-                            ui.label(state.split_index.to_string());
+                            ui.label(state.splits.len().to_string());
                             ui.end_row();
                         }
+                    });
+            }
+            Tab::Splits => {
+                Grid::new("splits_grid")
+                    .num_columns(2)
+                    .spacing([10.0, 4.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.label("Index").on_hover_text("Time of this split index.");
+                        ui.label("Time");
+                        ui.end_row();
+
+                        let timer = self.state.timer.0.write().unwrap();
+                        timer.splits.iter().enumerate().for_each(|(idx, split)| {
+                            ui.label(idx.to_string());
+
+                            let str = match split {
+                                None => "-",
+                                Some(time) => &fmt_duration(time),
+                            };
+
+                            ui.label(str);
+                            ui.end_row();
+                        })
                     });
             }
             Tab::Statistics => {
@@ -400,7 +425,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                             "The duration between individual calls to the update function.",
                         );
                         ui.label(fmt_duration(
-                            time::Duration::try_from(
+                            &time::Duration::try_from(
                                 *self.state.shared_state.tick_rate.lock().unwrap(),
                             )
                             .unwrap_or_default(),
@@ -410,7 +435,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                         ui.label("Avg. Tick Time").on_hover_text(
                             "The average duration of the execution of the update function.",
                         );
-                        ui.label(fmt_duration(time::Duration::seconds_f64(
+                        ui.label(fmt_duration(&time::Duration::seconds_f64(
                             self.state
                                 .shared_state
                                 .avg_tick_secs
@@ -423,7 +448,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                         );
                         ui.horizontal(|ui| {
                             ui.label(fmt_duration(
-                                time::Duration::try_from(
+                                &time::Duration::try_from(
                                     *self.state.shared_state.slowest_tick.lock().unwrap(),
                                 )
                                 .unwrap_or_default(),
@@ -719,7 +744,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                             Bar::new(mid_x, scale_y * bar.count_since_last_iteration() as f64)
                                 .name(format!(
                                     "{}\n{:.2}th percentile",
-                                    fmt_duration(time::Duration::nanoseconds(
+                                    fmt_duration(&time::Duration::nanoseconds(
                                         histogram.value_at_percentile(mid_x as _) as _,
                                     )),
                                     mid_x
@@ -761,6 +786,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
     fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
         match tab {
             Tab::Main => "Main",
+            Tab::Splits => "Splits",
             Tab::Statistics => "Statistics",
             Tab::Logs => "Logs",
             Tab::Variables => "Variables",
@@ -1016,7 +1042,7 @@ fn build_runtime(optimize: bool) -> Runtime {
 const SECONDS_PER_MINUTE: u64 = 60;
 const SECONDS_PER_HOUR: u64 = 60 * SECONDS_PER_MINUTE;
 
-fn fmt_duration(time: time::Duration) -> String {
+fn fmt_duration(time: &time::Duration) -> String {
     let nanoseconds = time.subsec_nanoseconds();
     let total_seconds = time.whole_seconds();
     let (minus, total_seconds, nanoseconds) = if (total_seconds | nanoseconds as i64) < 0 {
@@ -1052,8 +1078,7 @@ struct DebuggerTimerState {
     timer_state: TimerState,
     game_time: time::Duration,
     game_time_state: GameTimeState,
-    split_index: usize,
-    segments_splitted: Vec<bool>,
+    splits: Vec<Option<time::Duration>>,
     variables: IndexMap<Box<str>, String>,
     time_zone: UtcOffset,
     logs: Vec<LogMessage>,
@@ -1066,8 +1091,7 @@ impl DebuggerTimerState {
             timer_state: Default::default(),
             game_time: Default::default(),
             game_time_state: Default::default(),
-            split_index: Default::default(),
-            segments_splitted: Default::default(),
+            splits: Default::default(),
             variables: Default::default(),
             time_zone,
             logs: Default::default(),
@@ -1131,16 +1155,16 @@ impl Timer for DebuggerTimer {
         if t.timer_state == TimerState::NotRunning {
             None
         } else {
-            Some(t.split_index)
+            Some(t.splits.len())
         }
     }
 
     fn segment_splitted(&self, idx: usize) -> Option<bool> {
         let t = self.0.read().ok()?;
-        if t.timer_state == TimerState::NotRunning || t.split_index <= idx {
+        if t.timer_state == TimerState::NotRunning || t.splits.len() <= idx {
             None
         } else {
-            t.segments_splitted.get(idx).cloned()
+            Some(t.splits.get(idx).is_some())
         }
     }
 
@@ -1155,17 +1179,16 @@ impl Timer for DebuggerTimer {
     fn split(&mut self) {
         let mut state = self.0.write().unwrap();
         if state.timer_state == TimerState::Running {
-            state.split_index += 1;
-            state.segments_splitted.push(true);
-            state.log("Splitted.".into(), LogType::Runtime(LogLevel::Debug));
+            let time = state.game_time.clone();
+            state.splits.push(Some(time));
+            state.log(format!("Splitted at {}.", fmt_duration(&time)).into(), LogType::Runtime(LogLevel::Debug));
         }
     }
 
     fn skip_split(&mut self) {
         let mut state = self.0.write().unwrap();
         if state.timer_state == TimerState::Running {
-            state.split_index += 1;
-            state.segments_splitted.push(false);
+            state.splits.push(None);
             state.log("Split skipped.".into(), LogType::Runtime(LogLevel::Debug));
         }
     }
@@ -1176,9 +1199,8 @@ impl Timer for DebuggerTimer {
             state.timer_state = TimerState::Running;
         }
         if state.timer_state == TimerState::Running {
-            state.split_index = state.split_index.saturating_sub(1);
-            let i = state.split_index;
-            state.segments_splitted.truncate(i);
+            let i = state.splits.len().saturating_sub(1);
+            state.splits.truncate(i);
             state.log("Split undone.".into(), LogType::Runtime(LogLevel::Debug));
         }
     }
@@ -1242,8 +1264,7 @@ impl DebuggerTimerState {
 
     fn reset(&mut self) {
         self.timer_state = TimerState::NotRunning;
-        self.split_index = 0;
-        self.segments_splitted.clear();
+        self.splits.clear();
         self.game_time = time::Duration::ZERO;
         self.game_time_state = GameTimeState::NotInitialized;
         self.variables.clear();
