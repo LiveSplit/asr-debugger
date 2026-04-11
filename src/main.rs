@@ -1181,7 +1181,7 @@ impl Timer for DebuggerTimer {
         if state.timer_state == TimerState::Running {
             let time = state.game_time.clone();
             state.splits.push(Some(time));
-            state.log(format!("Splitted at {}.", fmt_duration(&time)).into(), LogType::Runtime(LogLevel::Debug));
+            state.log("Splitted.".into(), LogType::Runtime(LogLevel::Debug));
         }
     }
 
