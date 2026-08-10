@@ -657,6 +657,35 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                                     }
                                 }
                             }
+                            settings::WidgetKind::TextInput { ref default_value } => {
+                                ui.add_space(spacing);
+
+                                let label = ui.label(&*setting.description);
+                                if let Some(tooltip) = &setting.tooltip {
+                                    label.on_hover_text(&**tooltip);
+                                }
+
+                                let settings_map = runtime.settings_map();
+
+                                let mut value = match settings_map.get(&setting.key) {
+                                    Some(settings::Value::String(s)) => s.to_string(),
+                                    _ => default_value.to_string(),
+                                };
+
+                                if ui.text_edit_singleline(&mut value).changed() {
+                                    loop {
+                                        let old = runtime.settings_map();
+                                        let mut new = old.clone();
+                                        new.insert(
+                                            setting.key.clone(),
+                                            settings::Value::String(value.clone().into()),
+                                        );
+                                        if runtime.set_settings_map_if_unchanged(&old, new) {
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
                             settings::WidgetKind::FileSelect { ref filters } => {
                                 ui.add_space(spacing);
                                 let settings_map = runtime.settings_map();
