@@ -658,6 +658,27 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                                     ));
                                 }
                             }
+                            settings::WidgetKind::Button => {
+                                ui.add_space(spacing);
+                                let mut button = ui.button(&*setting.description);
+                                if let Some(tooltip) = &setting.tooltip {
+                                    button = button.on_hover_text(&**tooltip);
+                                }
+                                if button.clicked() {
+                                    if let Err(e) =
+                                        runtime.invoke_settings_button(&setting.key)
+                                    {
+                                        self.state.timer.0.write().unwrap().log(
+                                            format!(
+                                                "{:?}",
+                                                e.context("Failed invoking settings button.")
+                                            )
+                                            .into(),
+                                            LogType::Runtime(LogLevel::Error),
+                                        );
+                                    }
+                                }
+                            }
                         });
                         ui.end_row();
                     }
