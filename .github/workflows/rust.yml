@@ -91,11 +91,6 @@ jobs:
       - name: Checkout Commit
         uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: hecrj/setup-rust-action@v2
-        with:
-          rust-version: ${{ matrix.toolchain || 'stable' }}
-
       - name: Install Target
         if: matrix.install_target != ''
         run: rustup target add ${{ matrix.target }}
@@ -154,11 +149,6 @@ jobs:
       - name: Checkout Commit
         uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: hecrj/setup-rust-action@v2
-        with:
-          components: clippy
-
       - name: Run Clippy
         run: cargo clippy --all-features
 
@@ -167,11 +157,6 @@ jobs:
     steps:
       - name: Checkout Commit
         uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: hecrj/setup-rust-action@v2
-        with:
-          components: rustfmt
 
       - name: Run cargo fmt
         run: cargo fmt -- --check || true
