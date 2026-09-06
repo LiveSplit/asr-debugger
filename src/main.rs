@@ -4,7 +4,7 @@ use std::{
     fmt,
     fs::{self, File},
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, AtomicUsize},
         Arc, Mutex, RwLock,
@@ -37,6 +37,7 @@ use time::UtcOffset;
 mod clear_vec;
 mod file_filter;
 
+#[derive(Debug, Hash)]
 enum Tab {
     Main,
     Statistics,
@@ -103,9 +104,9 @@ fn main() {
         options,
         Box::new(move |cc| {
             cc.egui_ctx.set_visuals(Visuals::dark());
-            let mut style = (*cc.egui_ctx.style()).clone();
-            style.visuals.override_text_color = Some(TEXT_COLOR);
-            cc.egui_ctx.set_style(style);
+            cc.egui_ctx.style_mut_of(cc.egui_ctx.theme(), |style| {
+                style.visuals.override_text_color = Some(TEXT_COLOR);
+            });
             cc.egui_ctx.set_zoom_factor(1.15);
 
             let mut dock_state = DockState::new(vec![Tab::Main]);
@@ -300,10 +301,34 @@ struct TabViewer<'a> {
     state: &'a mut AppState,
 }
 
+fn open_file_dialog(initial_path: Option<&Path>) -> FileDialog {
+    let mut dialog = FileDialog::open_file();
+
+    if let Some(path) = initial_path {
+        if path.is_dir() {
+            dialog = dialog.initial_path(path);
+        } else {
+            let directory = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            dialog = dialog
+                .initial_path(directory)
+                .default_filename(path.file_name().unwrap_or_default().to_string_lossy());
+        }
+    }
+
+    dialog
+}
+
 impl egui_dock::TabViewer for TabViewer<'_> {
     type Tab = Tab;
 
-    fn closeable(&mut self, _: &mut Self::Tab) -> bool {
+    fn id(&mut self, tab: &mut Self::Tab) -> egui::Id {
+        egui::Id::new(tab)
+    }
+
+    fn is_closeable(&self, _: &Self::Tab) -> bool {
         false
     }
 
@@ -318,7 +343,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                         ui.label("WASM File").on_hover_text("The main auto splitter file to run.");
                         ui.horizontal(|ui| {
                             if ui.button("Open").clicked() {
-                                let mut dialog = FileDialog::open_file(self.state.path.clone());
+                                let mut dialog = open_file_dialog(self.state.path.as_deref());
                                 dialog.open();
                                 self.state.open_file_dialog = Some((dialog, FileDialogInfo::Wasm));
                             }
@@ -339,7 +364,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                         ui.horizontal(|ui| {
                             if ui.button("Open").clicked() {
                                 let mut dialog =
-                                    FileDialog::open_file(self.state.script_path.clone());
+                                    open_file_dialog(self.state.script_path.as_deref());
                                 dialog.open();
                                 self.state.open_file_dialog = Some((dialog, FileDialogInfo::Script));
                             }
@@ -649,7 +674,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                                 }
 
                                 if button.clicked() {
-                                    let mut dialog = FileDialog::open_file(current_path)
+                                    let mut dialog = open_file_dialog(current_path.as_deref())
                                         .show_files_filter(file_filter::build(filters.clone()));
                                     dialog.open();
                                     self.state.open_file_dialog = Some((
@@ -710,6 +735,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                 let scale_y = 100.0 / histogram.len() as f64;
 
                 let chart = BarChart::new(
+                    "Performance",
                     histogram
                         .iter_recorded()
                         .map(|bar| {
@@ -747,11 +773,11 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                     .allow_zoom(true)
                     .allow_drag(true)
                     .show(ui, |plot_ui| {
-                        plot_ui.vline(
-                            VLine::new(histogram.percentile_below(histogram.mean() as _))
-                                .name("Mean"),
-                        );
-                        plot_ui.vline(VLine::new(50.0).name("Median"));
+                        plot_ui.vline(VLine::new(
+                            "Mean",
+                            histogram.percentile_below(histogram.mean() as _),
+                        ));
+                        plot_ui.vline(VLine::new("Median", 50.0));
                         plot_ui.bar_chart(chart);
                     });
             }
@@ -831,7 +857,7 @@ fn render_value(value: &settings::Value, ui: &mut egui::Ui, path: fmt::Arguments
 }
 
 impl App for Debugger {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
         ctx.request_repaint();
 
         if let Some(path) = &self.state.path {
@@ -850,9 +876,11 @@ impl App for Debugger {
                 self.state.set_script_path(script_path.clone());
             }
         }
+    }
 
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut Frame) {
         if let Some((dialog, info)) = &mut self.state.open_file_dialog {
-            if dialog.show(ctx).selected() {
+            if dialog.show(ui.ctx()).selected() {
                 if let Some(file) = dialog.path().map(ToOwned::to_owned) {
                     match info {
                         FileDialogInfo::Wasm => self.state.load(Load::File(file)),
@@ -888,9 +916,10 @@ impl App for Debugger {
         };
 
         DockArea::new(&mut self.dock_state)
-            .show_window_close_buttons(false)
-            .style(Style::from_egui(ctx.style().as_ref()))
-            .show(ctx, &mut tab_viewer);
+            .show_leaf_close_all_buttons(false)
+            .show_close_buttons(false)
+            .style(Style::from_egui(ui.style().as_ref()))
+            .show_inside(ui, &mut tab_viewer);
     }
 }
 

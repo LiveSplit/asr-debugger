@@ -63,7 +63,7 @@ fn matches_mime_type(file_name: &[u8], mime_type: &str) -> bool {
     let Some(extensions) = mime_guess::get_extensions(top, sub) else {
         return false;
     };
-    let Some((_, extension)) = file_name.rsplit_once_str(&[b'.']) else {
+    let Some((_, extension)) = file_name.rsplit_once_str(".") else {
         return false;
     };
     extensions.iter().any(|ext| extension == ext.as_bytes())
